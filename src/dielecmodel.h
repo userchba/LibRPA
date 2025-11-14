@@ -18,7 +18,9 @@
 #include "utils_blacs.h"
 #include "utils_io.h"
 #include "vec.h"
-
+#ifdef ENABLE_NVHPC
+#include "cuda_connector.h"
+#endif
 using LIBRPA::Array_Desc;
 using LIBRPA::envs::blacs_ctxt_global_h;
 using RI::Tensor;
@@ -46,6 +48,9 @@ class diele_func
     // ( i:n_lambda, j:n_lambda )
     matrix_m<std::complex<double>> body_inv;
     // ( i:3, j:3 )
+    #ifdef ENABLE_NVHPC
+    ComplexMatrixDevice d_body_inv;
+    #endif
     matrix_m<std::complex<double>> Lind;
     // ( i:n_lambda, j:3 )
     matrix_m<std::complex<double>> bw;
@@ -132,16 +137,26 @@ class diele_func
     Array_Desc get_body_inv(matrix_m<std::complex<double>> &chi0_block,
                             Array_Desc &desc_nabf_nabf_opt);
     void construct_L(const int ifreq, Array_Desc &desc_body);
+    #ifdef ENABLE_NVHPC
+    void construct_L_nvhpc(const GpuDeviceStream& gpu_dev_stream, const int& ifreq, Array_Desc& desc_body);
+    #endif
     // Lebedev-Laikov quadrature
     void get_Leb_points();
     void get_g_enclosing_gamma();
     void calculate_q_gamma();
     void cal_eps(const int ifreq, Array_Desc &desc_nabf_nabf_opt, Array_Desc &desc_body);
+    #ifdef ENABLE_NVHPC
+    void cal_eps_nvhpc(const GpuDeviceStream& gpu_dev_stream, const int& ifreq, Array_Desc &desc_nabf_nabf_opt, Array_Desc &desc_body);
+    #endif
     // not used now due to performance optimization
     // std::complex<double> compute_chi0_inv_00(const int ifreq);
     // std::complex<double> compute_chi0_inv_ij(const int ifreq, int i, int j);
     void rewrite_eps(matrix_m<std::complex<double>> &chi0_block, const int ifreq,
                      Array_Desc &desc_nabf_nabf_opt);
+    #ifdef ENABLE_NVHPC
+    Array_Desc get_body_inv_nvhpc(const GpuDeviceStream& gpu_dev_stream, ComplexMatrixDevice&, const Array_Desc&);
+    void rewrite_eps_nvhpc(const GpuDeviceStream& gpu_dev_stream,ComplexMatrixDevice&,const int& ifreq,Array_Desc& desc_nabf_nabf_opt);
+    #endif
     void assign_chi0(matrix_m<std::complex<double>> &chi0_block, Array_Desc &desc_nabf_nabf_opt);
 };
 

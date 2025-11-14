@@ -19,7 +19,9 @@ using RI::Communicate_Tensors_Map_Judge::comm_map2_first;
 using LIBRPA::envs::mpi_comm_global_h;
 using LIBRPA::envs::ofs_myid;
 using LIBRPA::utils::lib_printf;
-
+#ifdef ENABLE_NVHPC
+#include "cuda_connector.h"
+#endif
 const int DoubleHavriliakNegami::d_npar = 8;
 
 const std::function<double(double, const std::vector<double> &)>
@@ -1070,6 +1072,43 @@ Array_Desc diele_func::get_body_inv(matrix_m<std::complex<double>> &chi0_block,
     return desc_body;
 };
 
+Array_Desc diele_func::get_body_inv_nvhpc(const GpuDeviceStream& gpu_dev_stream, ComplexMatrixDevice& d_chi0_block, const Array_Desc& desc_nabf_nabf_opt)
+{
+    Profiler::start("get_inverse_body_of_chi0_nvhpc");
+    gpu_dev_stream.calSync();
+    Array_Desc desc_body(blacs_ctxt_global_h);
+    desc_body.init_square_blk(n_nonsingular - 1, n_nonsingular - 1, 0, 0);
+    this->d_body_inv.set_data(desc_body.m_loc(),desc_body.n_loc(),gpu_dev_stream.stream);
+    Array_Desc_Device desc_body_dev(desc_body);
+    CudaConnector::pgemr2d_nvhpc(
+        gpu_dev_stream, n_nonsingular - 1, n_nonsingular - 1, 
+        d_chi0_block.ptr(), 2, 2, desc_nabf_nabf_opt, 
+        this->d_body_inv.ptr(), 1, 1, desc_body, 
+        CUDA_C_64F
+    );
+    ComplexMatrixDevice d_identity;
+    d_identity.set_data(desc_body.m_loc(),desc_body.n_loc(),gpu_dev_stream.stream);
+    d_identity.set_as_identity(gpu_dev_stream, desc_body_dev);
+    char order = 'c';
+    if(order == 'c'||order == 'C'){
+        CudaConnector::transpose_ComplexMatrixDevice(gpu_dev_stream,d_body_inv);
+        CudaConnector::transpose_ComplexMatrixDevice(gpu_dev_stream,d_identity);
+    }
+    CudaConnector::pgetrf_trs_nvhpc_mixed_precision(
+        gpu_dev_stream, CUBLAS_OP_N,
+        d_body_inv.ptr(), 1, 1, desc_body,
+        d_identity.ptr(), 1, 1, desc_body,
+        CUDA_C_64F, order
+    );
+    if(order == 'c'||order == 'C'){
+        CudaConnector::transpose_ComplexMatrixDevice(gpu_dev_stream,d_identity);
+    }
+    
+    this->d_body_inv.set_data_device(d_identity.nr(),d_identity.nc(),d_identity.ptr(),gpu_dev_stream);
+    Profiler::stop("get_inverse_body_of_chi0_nvhpc");
+    return desc_body;
+}
+
 void diele_func::construct_L(const int ifreq, Array_Desc &desc_body)
 {
     Profiler::start("cal_L");
@@ -1135,6 +1174,170 @@ void diele_func::construct_L(const int ifreq, Array_Desc &desc_body)
 
     Profiler::stop("cal_L");
 };
+
+#ifdef ENABLE_NVHPC
+void diele_func::construct_L_nvhpc(const GpuDeviceStream& gpu_dev_stream, const int& ifreq, Array_Desc& desc_body)
+{
+    Profiler::start("cal_L");
+    this->Lind.resize(3, 3, MAJOR::COL);
+    this->bw.resize(n_nonsingular - 1, 3, MAJOR::COL);
+    this->wb.resize(3, n_nonsingular - 1, MAJOR::COL);
+    Array_Desc desc_wing(blacs_ctxt_global_h);
+    desc_wing.init_square_blk(n_nonsingular - 1, 3, 0, 0);
+    
+    Array_Desc desc_wing_opt(blacs_ctxt_global_h);
+    desc_wing_opt.init(n_nonsingular - 1, 3, desc_body.mb(), desc_wing.nb(), 0, 0);
+    
+
+    Array_Desc desc_lam_3(blacs_ctxt_global_h);
+    desc_lam_3.init_square_blk(n_nonsingular - 1, 3, 0, 0);
+
+    Array_Desc desc_lam_3_opt(blacs_ctxt_global_h);
+    desc_lam_3_opt.init(n_nonsingular - 1, 3, desc_body.mb(), desc_lam_3.nb(), 0, 0);
+
+    Array_Desc desc_3_lam(blacs_ctxt_global_h);
+    desc_3_lam.init_square_blk(3, n_nonsingular - 1, 0, 0);
+
+    Array_Desc desc_3_lam_opt(blacs_ctxt_global_h);
+    desc_3_lam_opt.init(3, n_nonsingular - 1, desc_3_lam.mb(), desc_body.nb(), 0, 0);
+
+    Array_Desc desc_3_3(blacs_ctxt_global_h);
+    desc_3_3.init_square_blk(3, 3, 0, 0);
+
+    auto lam_3 = init_local_mat<complex<double>>(desc_lam_3, MAJOR::COL);
+    auto _3_lam = init_local_mat<complex<double>>(desc_3_lam, MAJOR::COL);
+    auto Lind_loc = init_local_mat<complex<double>>(desc_3_3, MAJOR::COL);
+    // printf("rank:%d,ma:%d,na:%d,mb:%d,nb:%d,mc:%d,nc:%d\n",gpu_dev_stream.rank,desc_body.m(),desc_body.n(),desc_wing_opt.m(),desc_wing_opt.n(),desc_lam_3_opt.m(),desc_lam_3_opt.n());
+    // printf("rank:%d,m_loc_a:%d,n_loc_a:%d,m_loc_b:%d,n_loc_b:%d,m_loc_c:%d,n_loc_c:%d\n",gpu_dev_stream.rank,desc_body.m_loc(),desc_body.n_loc(),desc_wing_opt.m_loc(),desc_wing_opt.n_loc(),desc_lam_3_opt.m_loc(),desc_lam_3_opt.n_loc());
+    // printf("rank:%d,mba:%d,nba:%d,mbb:%d,nbb:%d,mbc:%d,nbc:%d\n",gpu_dev_stream.rank,desc_body.mb(),desc_body.nb(),desc_wing_opt.mb(),desc_wing_opt.nb(),desc_lam_3_opt.mb(),desc_lam_3_opt.nb());
+    // tmp = head.at(ifreq) - transpose(wing.at(ifreq), true) * body_inv * wing.at(ifreq);
+    #ifdef ENABLE_NVHPC
+    auto wing_ifreq_opt = init_local_mat<complex<double>>(desc_wing_opt, MAJOR::COL);
+    auto lam_3_opt = init_local_mat<complex<double>>(desc_lam_3_opt, MAJOR::COL);
+    auto _3_lam_opt = init_local_mat<complex<double>>(desc_3_lam_opt, MAJOR::COL);
+    ComplexMatrixDevice d_lam_3,d_3_lam,d_Lind_loc;
+    ComplexMatrixDevice d_lam_3_opt,d_3_lam_opt;
+    ComplexMatrixDevice d_wing_ifreq,d_wing_ifreq_opt;
+    d_wing_ifreq.set_data(wing.at(ifreq).nr(),wing.at(ifreq).nc(),wing.at(ifreq).ptr(),gpu_dev_stream.stream);
+    d_wing_ifreq_opt.set_data(desc_wing_opt.m_loc(),desc_wing_opt.n_loc(),gpu_dev_stream.stream);
+    // d_lam_3.set_data(desc_lam_3.m_loc(),desc_lam_3.n_loc(),gpu_dev_stream.stream);
+    d_lam_3_opt.set_data(desc_lam_3_opt.m_loc(),desc_lam_3_opt.n_loc(),gpu_dev_stream.stream);
+    // d_3_lam.set_data(desc_3_lam.m_loc(),desc_3_lam.n_loc(),gpu_dev_stream.stream);
+    d_3_lam_opt.set_data(desc_3_lam_opt.m_loc(),desc_3_lam_opt.n_loc(),gpu_dev_stream.stream);
+    d_Lind_loc.set_data(desc_3_3.m_loc(),desc_3_3.n_loc(),gpu_dev_stream.stream);
+    ScalapackConnector::pgemr2d_f(
+        n_nonsingular-1, 3,
+        wing.at(ifreq).ptr(), 1, 1, desc_wing.desc,
+        wing_ifreq_opt.ptr(), 1, 1, desc_wing_opt.desc,
+        blacs_ctxt_global_h.ictxt    
+    );
+    // CudaConnector::pgemr2d_nvhpc(
+    //     gpu_dev_stream, n_nonsingular-1, 3,
+    //     d_wing_ifreq.ptr(), 1, 1, desc_wing,
+    //     d_wing_ifreq_opt.ptr(), 1, 1, desc_wing,
+    //     CUDA_C_64F
+    // );
+    CUDA_CHECK(cudaMemcpyAsync(d_wing_ifreq_opt.ptr(),wing_ifreq_opt.ptr(),desc_wing_opt.m_loc()*desc_wing_opt.n_loc()*sizeof(std::complex<double>),cudaMemcpyHostToDevice,gpu_dev_stream.stream));
+    std::complex<double> calpha(1.0,0.0),cbeta(0.0,0.0);
+    
+    CudaConnector::pgemm_nvhpc(
+        gpu_dev_stream, CUBLAS_OP_N, CUBLAS_OP_N, n_nonsingular - 1, 3, n_nonsingular - 1,
+        &calpha,
+        d_body_inv, 1, 1, desc_body,
+        d_wing_ifreq_opt, 1, 1, desc_wing_opt,
+        &cbeta,
+        d_lam_3_opt, 1, 1, desc_lam_3_opt,
+        CUBLAS_COMPUTE_64F_PEDANTIC
+    );
+    CUDA_CHECK(cudaMemcpyAsync(lam_3_opt.ptr(),d_lam_3_opt.ptr(),desc_lam_3_opt.m_loc()*desc_lam_3_opt.n_loc()*sizeof(std::complex<double>),cudaMemcpyDeviceToHost,gpu_dev_stream.stream));
+    gpu_dev_stream.cudaSync();
+    ScalapackConnector::pgemr2d_f(
+        n_nonsingular-1, 3,
+        lam_3_opt.ptr(), 1, 1, desc_lam_3_opt.desc,
+        lam_3.ptr(), 1, 1, desc_lam_3.desc,
+        blacs_ctxt_global_h.ictxt
+    );
+    gpu_dev_stream.cudaSync();
+    #else
+    ScalapackConnector::pgemm_f('N', 'N', n_nonsingular - 1, 3, n_nonsingular - 1, 1.0,
+                                body_inv.ptr(), 1, 1, desc_body.desc, wing.at(ifreq).ptr(), 1, 1,
+                                desc_wing.desc, 0.0, lam_3.ptr(), 1, 1, desc_lam_3.desc);
+    #endif
+    #ifdef ENABLE_NVHPC
+    CudaConnector::pgemm_nvhpc(
+        gpu_dev_stream, CUBLAS_OP_C, CUBLAS_OP_N, 3, 3, n_nonsingular - 1,
+        &calpha,
+        d_wing_ifreq_opt, 1, 1, desc_wing_opt,
+        d_lam_3_opt, 1, 1, desc_lam_3_opt,
+        &cbeta,
+        d_Lind_loc, 1, 1, desc_3_3,
+        CUBLAS_COMPUTE_64F_PEDANTIC
+    );
+    CUDA_CHECK(cudaMemcpyAsync(Lind_loc.ptr(),d_Lind_loc.ptr(),desc_3_3.m_loc()*desc_3_3.n_loc()*sizeof(std::complex<double>),cudaMemcpyDeviceToHost,gpu_dev_stream.stream));
+    gpu_dev_stream.cudaSync();
+    #else
+    ScalapackConnector::pgemm_f('C', 'N', 3, 3, n_nonsingular - 1, 1.0, wing.at(ifreq).ptr(), 1, 1,
+                                desc_wing.desc, lam_3.ptr(), 1, 1, desc_lam_3.desc, 0.0,
+                                Lind_loc.ptr(), 1, 1, desc_3_3.desc);
+    #endif
+    #ifndef ENABLE_NVHPC
+    CudaConnector::pgemm_nvhpc(
+        gpu_dev_stream, CUBLAS_OP_C, CUBLAS_OP_N, 3, n_nonsingular - 1, n_nonsingular - 1,
+        &calpha,
+        d_wing_ifreq_opt, 1, 1, desc_wing_opt,
+        d_body_inv, 1, 1, desc_body,
+        &cbeta,
+        d_3_lam_opt, 1, 1, desc_3_lam_opt,
+        CUBLAS_COMPUTE_64F_PEDANTIC
+    );
+    CUDA_CHECK(cudaMemcpyAsync(_3_lam_opt.ptr(),d_3_lam_opt.ptr(),desc_3_lam_opt.m_loc()*desc_3_lam_opt.n_loc()*sizeof(std::complex<double>),cudaMemcpyDeviceToHost,gpu_dev_stream.stream));
+    gpu_dev_stream.cudaSync();
+    ScalapackConnector::pgemr2d_f(
+        3, n_nonsingular-1,
+        _3_lam_opt.ptr(), 1, 1, desc_3_lam_opt.desc,
+        _3_lam.ptr(), 1, 1, desc_3_lam.desc,
+        blacs_ctxt_global_h.ictxt
+    );
+    #else
+    ScalapackConnector::pgemm_f('C', 'N', 3, n_nonsingular - 1, n_nonsingular - 1, 1.0,
+                                wing.at(ifreq).ptr(), 1, 1, desc_wing.desc, body_inv.ptr(), 1, 1,
+                                desc_body.desc, 0.0, _3_lam.ptr(), 1, 1, desc_3_lam.desc);
+    #endif
+
+    for (int i = 0; i != 3; i++)
+    {
+        auto loc_i = desc_3_3.indx_g2l_r(i);
+        for (int ilambda = 0; ilambda < n_nonsingular - 1; ilambda++)
+        {
+            auto loc_ilambda = desc_lam_3.indx_g2l_r(ilambda);
+            auto loc_ibw = desc_lam_3.indx_g2l_c(i);
+            if (loc_ibw >= 0 && loc_ilambda >= 0)
+                this->bw(ilambda, i) = lam_3(loc_ilambda, loc_ibw);
+
+            loc_ilambda = desc_3_lam.indx_g2l_c(ilambda);
+            auto loc_iwb = desc_3_lam.indx_g2l_r(i);
+            if (loc_iwb >= 0 && loc_ilambda >= 0)
+                this->wb(i, ilambda) = _3_lam(loc_iwb, loc_ilambda);
+
+            MPI_Allreduce(MPI_IN_PLACE, &bw(ilambda, i), 1, MPI_DOUBLE_COMPLEX, MPI_SUM,
+                          mpi_comm_global_h.comm);
+            MPI_Allreduce(MPI_IN_PLACE, &wb(i, ilambda), 1, MPI_DOUBLE_COMPLEX, MPI_SUM,
+                          mpi_comm_global_h.comm);
+        }
+
+        for (int j = 0; j != 3; j++)
+        {
+            auto loc_j = desc_3_3.indx_g2l_c(j);
+            if (loc_j >= 0 && loc_i >= 0)
+                this->Lind(i, j) = head.at(ifreq)(i, j) - Lind_loc(loc_i, loc_j);
+            MPI_Allreduce(MPI_IN_PLACE, &Lind(i, j), 1, MPI_DOUBLE_COMPLEX, MPI_SUM,
+                          mpi_comm_global_h.comm);
+        }
+    }
+
+    Profiler::stop("cal_L");
+};
+#endif
 
 void diele_func::get_Leb_points()
 {
@@ -1296,24 +1499,6 @@ void diele_func::cal_eps(const int ifreq, Array_Desc &desc_nabf_nabf_opt, Array_
             chi0(ilo, jlo) = result;
         }
     }
-    // auto identity = init_local_mat<complex<double>>(desc_body, MAJOR::COL);
-    // for (int i = 0; i < n_nonsingular - 1; i++)
-    // {
-    //     const int ilo = desc_body.indx_g2l_r(i);
-    //     if (ilo < 0) continue;
-    //     for (int j = 0; j < n_nonsingular - 1; j++)
-    //     {
-    //         const int jlo = desc_body.indx_g2l_c(j);
-    //         if (jlo < 0) continue;
-    //         if (i == j)
-    //             identity(ilo, jlo) = 1.0;
-    //         else
-    //             identity(ilo, jlo) = 0.0;
-    //     }
-    // }
-    // ScalapackConnector::pgemm_f('N', 'N', n_nonsingular - 1, n_nonsingular - 1, n_nonsingular - 1,
-    //                             1.0, body_inv.ptr(), 1, 1, desc_body.desc, identity.ptr(), 1, 1,
-    //                             desc_body.desc, 1.0, chi0.ptr(), 2, 2, desc_nabf_nabf_opt.desc);
     ScalapackConnector::pgeadd_f(
         'N', n_nonsingular - 1, n_nonsingular - 1, 
         1.0, 
@@ -1327,6 +1512,119 @@ void diele_func::cal_eps(const int ifreq, Array_Desc &desc_nabf_nabf_opt, Array_
     Profiler::stop("cal_inverse_dielectric_matrix");
 };
 
+#ifdef ENABLE_NVHPC
+void diele_func::cal_eps_nvhpc(const GpuDeviceStream& gpu_dev_stream, const int& ifreq, Array_Desc &desc_nabf_nabf_opt, Array_Desc &desc_body)
+{
+    Profiler::start("cal_inverse_dielectric_matrix");
+    // mpi_comm_global_h.barrier();
+    this->chi0 = init_local_mat<complex<double>>(desc_nabf_nabf_opt, MAJOR::COL);
+
+    const double k_volume = std::abs(G.Det());
+    this->vol_gamma = k_volume / nk;
+    double vol_gamma_numeric = 0.0;
+    if (ifreq == 0 && mpi_comm_global_h.is_root())
+    {
+        for (int ileb = 0; ileb != qw_leb.size(); ileb++)
+        {
+            vol_gamma_numeric += qw_leb[ileb] * std::pow(q_gamma[ileb], 3) / 3.0;
+        }
+        std::cout << "Number of angular grids for average inverse dielectric matrix: "
+                  << qw_leb.size() << std::endl;
+        std::cout << "vol_gamma_numeric/vol_gamma: " << vol_gamma_numeric << ", " << vol_gamma
+                  << std::endl;
+        std::cout << "Angular quadrature accuracy for volume: " << vol_gamma_numeric / vol_gamma
+                  << " (should be close to 1)" << std::endl;
+    }
+    /*std::cout << "major of Matz: " << wing[0].is_row_major() << "," << body_inv.is_row_major()
+              << "," << transpose(wing.at(0), true).is_row_major() << "," << Lind.is_row_major()
+              << std::endl;*/
+    construct_L_nvhpc(gpu_dev_stream, ifreq, desc_body);
+
+    Profiler::start("precompute_q_data");
+
+    const size_t nleb = qw_leb.size();
+    std::vector<std::complex<double>> weights(nleb);
+    std::vector<std::array<double, 3>> q_vectors(nleb);
+
+    const auto L00 = Lind(0, 0), L01 = Lind(0, 1), L02 = Lind(0, 2);
+    const auto L10 = Lind(1, 0), L11 = Lind(1, 1), L12 = Lind(1, 2);
+    const auto L20 = Lind(2, 0), L21 = Lind(2, 1), L22 = Lind(2, 2);
+
+#pragma omp parallel for schedule(static)
+    for (int ileb = 0; ileb < nleb; ++ileb)
+    {
+        const double qx = qx_leb[ileb];
+        const double qy = qy_leb[ileb];
+        const double qz = qz_leb[ileb];
+
+        q_vectors[ileb] = {qx, qy, qz};
+
+        const auto qLq = qx * (qx * L00 + qy * L01 + qz * L02) +
+                         qy * (qx * L10 + qy * L11 + qz * L12) +
+                         qz * (qx * L20 + qy * L21 + qz * L22);
+
+        weights[ileb] = qw_leb[ileb] * std::pow(q_gamma[ileb], 3) / (3.0 * vol_gamma) / qLq;
+    }
+    Profiler::stop("precompute_q_data");
+
+    Profiler::start("cal_inverse_dielectric_matrix_ij");
+    int i_start = 0, i_end = n_nonsingular;
+    int j_start = 0, j_end = n_nonsingular;
+#pragma omp parallel for schedule(dynamic, 4) collapse(2)
+    for (int i = i_start; i != i_end; i++)
+    {
+        for (int j = j_start; j != j_end; j++)
+        {
+            const int ilo = desc_nabf_nabf_opt.indx_g2l_r(i);
+            if (ilo < 0) continue;
+            const int jlo = desc_nabf_nabf_opt.indx_g2l_c(j);
+            if (jlo < 0) continue;
+
+            complex<double> result = 0.0;
+
+            if (i == 0 && j == 0)
+            {
+                for (int ileb = 0; ileb < nleb; ++ileb)
+                {
+                    result += weights[ileb];
+                }
+            }
+            else if (i == 0 || j == 0)
+            {
+                result = 0.0;
+            }
+            else
+            {
+                const int idx_i = i - 1, idx_j = j - 1;
+
+                const auto bw_i0 = bw(idx_i, 0), bw_i1 = bw(idx_i, 1), bw_i2 = bw(idx_i, 2);
+                const auto wb_j0 = wb(0, idx_j), wb_j1 = wb(1, idx_j), wb_j2 = wb(2, idx_j);
+
+                for (int ileb = 0; ileb < nleb; ++ileb)
+                {
+                    const auto &[qx, qy, qz] = q_vectors[ileb];
+                    const auto bwq = bw_i0 * qx + bw_i1 * qy + bw_i2 * qz;
+                    const auto qwb = qx * wb_j0 + qy * wb_j1 + qz * wb_j2;
+
+                    result += weights[ileb] * bwq * qwb;
+                }
+            }
+            chi0(ilo, jlo) = result;
+        }
+    }
+    ScalapackConnector::pgeadd_f(
+        'N', n_nonsingular - 1, n_nonsingular - 1, 
+        1.0, 
+        body_inv.ptr(), 1, 1, desc_body.desc, 
+        1.0, 
+        chi0.ptr(), 2, 2, desc_nabf_nabf_opt.desc);
+    Profiler::stop("cal_inverse_dielectric_matrix_ij");
+    if (mpi_comm_global_h.is_root())
+        std::cout << "* Success: calculate average inverse dielectric matrix no." << ifreq + 1
+                  << "." << std::endl;
+    Profiler::stop("cal_inverse_dielectric_matrix");
+};
+#endif
 /*std::complex<double> diele_func::compute_chi0_inv_00(const int ifreq)
 {
     std::complex<double> total = 0.0;
@@ -1415,5 +1713,24 @@ void diele_func::rewrite_eps(matrix_m<std::complex<double>> &chi0_block, const i
     this->Lind.clear();
     this->body_inv.clear();
 };
+
+#ifdef ENABLE_NVHPC
+void diele_func::rewrite_eps_nvhpc(const GpuDeviceStream& gpu_dev_stream, ComplexMatrixDevice& d_chi0_block, const int& ifreq, Array_Desc& desc_nabf_nabf_opt)
+{
+    auto desc_body = get_body_inv_nvhpc(gpu_dev_stream, d_chi0_block, desc_nabf_nabf_opt);
+    this->body_inv = init_local_mat<complex<double>>(desc_body, MAJOR::COL);
+    CUDA_CHECK(cudaMemcpyAsync(this->body_inv.ptr(),this->d_body_inv.ptr(),sizeof(cuDoubleComplex)*desc_body.m_loc()*desc_body.n_loc(),cudaMemcpyDeviceToHost,gpu_dev_stream.stream));
+    
+    cal_eps_nvhpc(gpu_dev_stream, ifreq, desc_nabf_nabf_opt, desc_body);
+    d_chi0_block.set_data(this->chi0.nr(),this->chi0.nc(),this->chi0.ptr(),gpu_dev_stream.stream);
+    // this->chi0.clear();
+    ofs_myid << get_timestamp() << "success finish rewrite_eps"<<endl;
+    
+    this->Lind.clear();
+    this->body_inv.clear();
+    this->d_body_inv.clean(gpu_dev_stream.stream);
+    ofs_myid << get_timestamp() << "success clean the data"<<endl;
+}
+#endif
 
 diele_func df_headwing = diele_func();
