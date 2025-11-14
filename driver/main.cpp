@@ -39,7 +39,9 @@
 #include "utils_cmake.h"
 #include "utils_mem.h"
 #include "utils_mpi_io.h"
-
+#ifdef ENABLE_NVHPC
+#include "device_stream.h"
+#endif
 static void initialize(int argc, char **argv)
 {
     using namespace LIBRPA::envs;
@@ -54,7 +56,9 @@ static void initialize(int argc, char **argv)
     }
 
     initialize_librpa_environment(MPI_COMM_WORLD, 0, 0, "");
-
+    #ifdef ENABLE_NVHPC
+    device_stream.init();
+    #endif
     // Global profiler begins right after MPI is initialized
     Profiler::start("total", "Total");
 }
@@ -77,7 +81,9 @@ static void finalize(bool success)
             lib_printf("libRPA failed\n");
         }
     }
-
+    #ifdef ENABLE_NVHPC
+    device_stream.finalize();
+    #endif
     finalize_librpa_environment();
 
     MPI_Finalize();
