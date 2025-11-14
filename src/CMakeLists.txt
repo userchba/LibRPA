@@ -72,6 +72,29 @@ else()
   list(APPEND lib_sources get_minimax_local.cpp)
 endif()
 
+if(USE_CUDA)
+  list(APPEND lib_sources 
+        epsilon_cuda.cpp
+        cuda_connector.cu
+        )
+endif()
+if(ENABLE_NVHPC)
+  list(APPEND lib_sources 
+        cuda_connector.cpp  
+        array_desc_device.cu
+        device_stream.cpp
+        matrix_device.cpp
+        device_connector.cpp
+        )
+  # set_source_files_properties(
+  #   base_blacs.cpp
+  #   PROPERTIES
+  #   LANGUAGE CUDA
+  #   # COMPILE_OPTIONS "--x cu"
+  #   )
+endif()
+
+
 target_include_directories(rpa_lib
   PRIVATE
     # ${CMAKE_CURRENT_LIST_DIR}

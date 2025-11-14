@@ -11,6 +11,10 @@
 #include "stl_io_helper.h"
 #include "utils_mem.h"
 #include "utils_timefreq.h"
+#ifdef LIBRPA_USE_CUDA
+#include <cuda_runtime.h> // added by hbchen in 2025-5-17
+#include <epsilon_cuda.h> // added by hbchen in 2025-7-26
+#endif
 
 namespace LIBRPA
 {
@@ -87,6 +91,23 @@ void get_rpa_correlation_energy_(std::complex<double> &rpa_corr,
     mpi_comm_global_h.barrier();
     Profiler::start("EcRPA", "Compute RPA correlation Energy");
     CorrEnergy corr;
+    #ifdef LIBRPA_USE_CUDA
+    int deviceCount;
+    cudaError_t err= cudaGetDeviceCount(&deviceCount);
+    // lib_printf("cudaSuccess:%d\n",err==cudaSuccess&&deviceCount>0);
+    printf("Number of CUDA devices: %d\n", deviceCount);
+    // deviceCount!=4 is a bug, because if I don't set the gres=gpu:*, cuda will detect all the gpu device
+    if(err==cudaSuccess&&deviceCount>0){//说明存在gpu设备
+        #ifdef ENABLE_NVHPC
+        if (Params::use_scalapack_ecrpa &&
+        (LIBRPA::parallel_routing == LIBRPA::ParallelRouting::ATOM_PAIR ||
+         LIBRPA::parallel_routing == LIBRPA::ParallelRouting::LIBRI))
+            corr = compute_RPA_correlation_blacs_2d_cuda(chi0, Vq);
+        else
+        #endif
+            corr = compute_RPA_correlation_cuda(chi0, Vq);
+    }else 
+    #endif
     if (Params::use_scalapack_ecrpa &&
         (LIBRPA::parallel_routing == LIBRPA::ParallelRouting::ATOM_PAIR ||
          LIBRPA::parallel_routing == LIBRPA::ParallelRouting::LIBRI))
