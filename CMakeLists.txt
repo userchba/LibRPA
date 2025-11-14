@@ -20,14 +20,18 @@ set(LIB_NAME            "rpa")
 set(FORTRAN_LIB_NAME    "rpa_f")
 
 # options setup
-option(USE_LIBRI            "Use LibRI for tensor contraction" OFF)
+option(USE_LIBRI            "Use LibRI for tensor contraction" ON)
 option(USE_CMAKE_INC        "Use cmake.inc for configure" OFF)
-option(USE_GREENX_API       "Use GreenX API for minimax grids generation" OFF)
+option(USE_GREENX_API       "Use GreenX API for minimax grids generation" ON)
 option(USE_EXTERNAL_GREENX  "Use external GreenX library rather than the packaged one" OFF)
 option(ENABLE_TEST          "Flag to build unit tests" ON)
 option(ENABLE_DRIVER        "Flag to build driver executables" ON)
 option(ENABLE_FORTRAN_BIND  "Flag to build Fotran binding" OFF)
 option(VERBOSE_OUTPUT       "Flag to print verbose information in stdout and process output" OFF)
+option(USE_CUDA "Use cuda for EcRPA calculation" OFF)
+option(ENABLE_CUSOLVERMP "Use cusolverMp for EcRPA calculation" OFF)
+option(ENABLE_CUBLASMP "Use cublasmp for EcRPA calculation" OFF )
+option(ENABLE_NVHPC "Use nvhpc for calculation" OFF )
 # NOTE: static library not tested
 option(BUILD_LIBRPA_SHARED  "Flag to build shared libraries" ON)
 
@@ -60,6 +64,10 @@ if(USE_GREENX_API OR ENABLE_FORTRAN_BIND)
   enable_language(CXX Fortran)
 else()
   enable_language(CXX)
+endif()
+# added by hbchen in 2025-5-19
+if(USE_CUDA)
+  enable_language(CUDA)
 endif()
 
 # bypass the deprecation warning of classic C++ of oneAPI
@@ -176,6 +184,46 @@ if(USE_LIBRI)
 
   add_compile_definitions("LIBRPA_USE_LIBRI")
 endif()
+
+
+# add gpu accelaration by chenhaobo in 2025-04-26
+# cmake_policy(SET CMP0146 NEW)
+if(USE_CUDA)
+  find_package(CUDA REQUIRED)
+  find_package(CUDAToolkit REQUIRED)
+  add_definitions(-DADD_)
+  include_directories(${MAGMA_ROOT}/include)
+  set(MAGMA_INCLUDE_DIR "${MAGMA_ROOT}/include")
+  set(MAGMA_INCLUDE_DIR $ENV{MAGMA_INCLUDE_DIR})
+  link_directories(${MAGMA_ROOT}/lib)
+  set(CMAKE_CUDA_STANDARD 14)
+  set(CUDA_LIBRARIES "-lcublas -lcudart -lcusolver")
+  list(APPEND math_libs
+              ${CUDA_LIBRARIES}
+              ${MAGMA_ROOT}/lib/libmagma.so
+              )
+  add_compile_definitions("LIBRPA_USE_CUDA")
+endif()
+if(ENABLE_NVHPC)
+add_compile_definitions("ENABLE_NVHPC")
+set(ENABLE_CUSOLVERMP ON)
+set(ENABLE_CUBLASMP ON)
+endif()
+if(ENABLE_CUSOLVERMP)
+  add_compile_definitions("ENABLE_CUSOLVERMP")
+  set(CUSOLVERMP_LIBRAYIES "-lcal -lcusolverMp")
+  list(APPEND math_libs
+              ${CUSOLVERMP_LIBRAYIES}
+              )
+endif()
+if(ENABLE_CUBLASMP)
+  add_compile_definitions("ENABLE_CUBLASMP")
+  set(CUBLASMP_LIBRAYIES "-lcublasmp -lcurand -lcublas")
+  list(APPEND math_libs
+              ${CUBLASMP_LIBRAYIES}
+              )
+endif()
+# finish adding gpu accelaration by chenhaobo in 2025-04-26
 
 if(CMAKE_BUILD_TYPE MATCHES "Debug")
   message(STATUS "Build type set to Debug, adding LIBRPA_DEBUG preprocessor directive")
