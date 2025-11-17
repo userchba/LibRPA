@@ -1071,7 +1071,7 @@ Array_Desc diele_func::get_body_inv(matrix_m<std::complex<double>> &chi0_block,
     Profiler::stop("get_inverse_body_of_chi0");
     return desc_body;
 };
-
+#ifdef ENABLE_NVHPC
 Array_Desc diele_func::get_body_inv_nvhpc(const GpuDeviceStream& gpu_dev_stream, ComplexMatrixDevice& d_chi0_block, const Array_Desc& desc_nabf_nabf_opt)
 {
     Profiler::start("get_inverse_body_of_chi0_nvhpc");
@@ -1108,7 +1108,7 @@ Array_Desc diele_func::get_body_inv_nvhpc(const GpuDeviceStream& gpu_dev_stream,
     Profiler::stop("get_inverse_body_of_chi0_nvhpc");
     return desc_body;
 }
-
+#endif
 void diele_func::construct_L(const int ifreq, Array_Desc &desc_body)
 {
     Profiler::start("cal_L");
