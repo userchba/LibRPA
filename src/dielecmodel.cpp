@@ -1227,7 +1227,7 @@ void diele_func::construct_L_nvhpc(const GpuDeviceStream& gpu_dev_stream, const 
     d_Lind_loc.set_data(desc_3_3.m_loc(),desc_3_3.n_loc(),gpu_dev_stream.stream);
     
     std::complex<double> calpha(1.0,0.0),cbeta(0.0,0.0);
-    printf("successful before gemm1\n");
+    
     CudaConnector::pgemm_nvhpc(
         gpu_dev_stream, CUBLAS_OP_N, CUBLAS_OP_N, n_nonsingular - 1, 3, n_nonsingular - 1,
         &calpha,
@@ -1237,7 +1237,7 @@ void diele_func::construct_L_nvhpc(const GpuDeviceStream& gpu_dev_stream, const 
         d_lam_3, 1, 1, desc_lam_3,
         CUBLAS_COMPUTE_64F_PEDANTIC
     );
-    printf("successful after gemm1\n");
+    
     // printf("desc_wing:m_loc:%d,n_loc:%d,lld:%d,mb:%d,nb:%d\n",desc_wing.m_loc(),desc_wing.n_loc(),desc_wing.lld(),desc_wing.mb(),desc_wing.nb());
     // printf("desc_lam_3:m_loc:%d,n_loc:%d,lld:%d,mb:%d,nb:%d\n",desc_lam_3.m_loc(),desc_lam_3.n_loc(),desc_lam_3.lld(),desc_lam_3.mb(),desc_lam_3.nb());
     // printf("desc_3_3:m_loc:%d,n_loc:%d,lld:%d,mb:%d,nb:%d\n",desc_3_3.m_loc(),desc_3_3.n_loc(),desc_3_3.lld(),desc_3_3.mb(),desc_3_3.nb());
@@ -1250,7 +1250,7 @@ void diele_func::construct_L_nvhpc(const GpuDeviceStream& gpu_dev_stream, const 
         d_Lind_loc, 1, 1, desc_3_3,
         CUBLAS_COMPUTE_64F_PEDANTIC
     );
-    printf("successful after gemm2\n");
+    
     CudaConnector::pgemm_nvhpc(
         gpu_dev_stream, CUBLAS_OP_C, CUBLAS_OP_N, 3, n_nonsingular - 1, n_nonsingular - 1,
         &calpha,
@@ -1260,7 +1260,7 @@ void diele_func::construct_L_nvhpc(const GpuDeviceStream& gpu_dev_stream, const 
         d_3_lam, 1, 1, desc_3_lam,
         CUBLAS_COMPUTE_64F_PEDANTIC
     );
-    printf("successful after gemm3\n");
+    
     CUDA_CHECK(cudaMemcpyAsync(lam_3.ptr(), d_lam_3.ptr(), desc_lam_3.m_loc() * desc_lam_3.n_loc() * sizeof(std::complex<double>), cudaMemcpyDeviceToHost, gpu_dev_stream.stream));
     CUDA_CHECK(cudaMemcpyAsync(_3_lam.ptr(), d_3_lam.ptr(), desc_3_lam.m_loc() * desc_3_lam.n_loc() * sizeof(std::complex<double>), cudaMemcpyDeviceToHost, gpu_dev_stream.stream));
     CUDA_CHECK(cudaMemcpyAsync(Lind_loc.ptr(), d_Lind_loc.ptr(), desc_3_3.m_loc() * desc_3_3.n_loc() * sizeof(std::complex<double>), cudaMemcpyDeviceToHost, gpu_dev_stream.stream));
