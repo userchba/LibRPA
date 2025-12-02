@@ -514,7 +514,7 @@ void diele_func::wing_mu_to_lambda(matrix_m<std::complex<double>> &sqrtveig_blac
     for (int iomega = 0; iomega != this->omega.size(); iomega++)
     {
         auto &wing_tmp = this->wing.at(iomega);
-        wing_tmp = init_local_mat<complex<double>>(desc_wing_opt, MAJOR::COL);
+        wing_tmp = init_local_mat<complex<double>>(desc_wing, MAJOR::COL);
         // TODO: reconstruct wing_mu
         auto wing_mu_tmp = init_local_mat<complex<double>>(desc_wing_mu, MAJOR::COL);
         for (int alpha = 0; alpha != 3; alpha++)
@@ -1150,9 +1150,9 @@ void diele_func::construct_L(const int ifreq, Array_Desc &desc_body)
     // tmp = head.at(ifreq) - transpose(wing.at(ifreq), true) * body_inv * wing.at(ifreq);
     ScalapackConnector::pgemm_f('N', 'N', n_nonsingular - 1, 3, n_nonsingular - 1, 1.0,
                                 body_inv.ptr(), 1, 1, desc_body.desc, wing.at(ifreq).ptr(), 1, 1,
-                                desc_wing_opt.desc, 0.0, lam_3.ptr(), 1, 1, desc_lam_3.desc);
+                                desc_wing.desc, 0.0, lam_3.ptr(), 1, 1, desc_lam_3.desc);
     ScalapackConnector::pgemm_f('C', 'N', 3, 3, n_nonsingular - 1, 1.0, wing.at(ifreq).ptr(), 1, 1,
-                                desc_wing_opt.desc, lam_3.ptr(), 1, 1, desc_lam_3.desc, 0.0,
+                                desc_wing.desc, lam_3.ptr(), 1, 1, desc_lam_3.desc, 0.0,
                                 Lind_loc.ptr(), 1, 1, desc_3_3.desc);
     ScalapackConnector::pgemm_f('C', 'N', 3, n_nonsingular - 1, n_nonsingular - 1, 1.0,
                                 wing.at(ifreq).ptr(), 1, 1, desc_wing.desc, body_inv.ptr(), 1,
@@ -1227,7 +1227,7 @@ void diele_func::construct_L_nvhpc(const GpuDeviceStream& gpu_dev_stream, const 
     d_Lind_loc.set_data(desc_3_3.m_loc(),desc_3_3.n_loc(),gpu_dev_stream.stream);
     
     std::complex<double> calpha(1.0,0.0),cbeta(0.0,0.0);
-    
+
     CudaConnector::pgemm_nvhpc(
         gpu_dev_stream, CUBLAS_OP_N, CUBLAS_OP_N, n_nonsingular - 1, 3, n_nonsingular - 1,
         &calpha,
@@ -1237,7 +1237,7 @@ void diele_func::construct_L_nvhpc(const GpuDeviceStream& gpu_dev_stream, const 
         d_lam_3, 1, 1, desc_lam_3,
         CUBLAS_COMPUTE_64F_PEDANTIC
     );
-    
+
     // printf("desc_wing:m_loc:%d,n_loc:%d,lld:%d,mb:%d,nb:%d\n",desc_wing.m_loc(),desc_wing.n_loc(),desc_wing.lld(),desc_wing.mb(),desc_wing.nb());
     // printf("desc_lam_3:m_loc:%d,n_loc:%d,lld:%d,mb:%d,nb:%d\n",desc_lam_3.m_loc(),desc_lam_3.n_loc(),desc_lam_3.lld(),desc_lam_3.mb(),desc_lam_3.nb());
     // printf("desc_3_3:m_loc:%d,n_loc:%d,lld:%d,mb:%d,nb:%d\n",desc_3_3.m_loc(),desc_3_3.n_loc(),desc_3_3.lld(),desc_3_3.mb(),desc_3_3.nb());
@@ -1250,7 +1250,7 @@ void diele_func::construct_L_nvhpc(const GpuDeviceStream& gpu_dev_stream, const 
         d_Lind_loc, 1, 1, desc_3_3,
         CUBLAS_COMPUTE_64F_PEDANTIC
     );
-    
+
     CudaConnector::pgemm_nvhpc(
         gpu_dev_stream, CUBLAS_OP_C, CUBLAS_OP_N, 3, n_nonsingular - 1, n_nonsingular - 1,
         &calpha,
@@ -1260,7 +1260,7 @@ void diele_func::construct_L_nvhpc(const GpuDeviceStream& gpu_dev_stream, const 
         d_3_lam, 1, 1, desc_3_lam,
         CUBLAS_COMPUTE_64F_PEDANTIC
     );
-    
+
     CUDA_CHECK(cudaMemcpyAsync(lam_3.ptr(), d_lam_3.ptr(), desc_lam_3.m_loc() * desc_lam_3.n_loc() * sizeof(std::complex<double>), cudaMemcpyDeviceToHost, gpu_dev_stream.stream));
     CUDA_CHECK(cudaMemcpyAsync(_3_lam.ptr(), d_3_lam.ptr(), desc_3_lam.m_loc() * desc_3_lam.n_loc() * sizeof(std::complex<double>), cudaMemcpyDeviceToHost, gpu_dev_stream.stream));
     CUDA_CHECK(cudaMemcpyAsync(Lind_loc.ptr(), d_Lind_loc.ptr(), desc_3_3.m_loc() * desc_3_3.n_loc() * sizeof(std::complex<double>), cudaMemcpyDeviceToHost, gpu_dev_stream.stream));
