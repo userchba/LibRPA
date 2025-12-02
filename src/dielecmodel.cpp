@@ -19,6 +19,7 @@ using RI::Communicate_Tensors_Map_Judge::comm_map2_first;
 using LIBRPA::envs::mpi_comm_global_h;
 using LIBRPA::envs::ofs_myid;
 using LIBRPA::utils::lib_printf;
+
 #ifdef ENABLE_NVHPC
 #include "cuda_connector.h"
 #endif
@@ -500,8 +501,16 @@ void diele_func::wing_mu_to_lambda(matrix_m<std::complex<double>> &sqrtveig_blac
     int n_lambda = this->n_nonsingular - 1;
     Array_Desc desc_wing_mu(blacs_ctxt_global_h);
     desc_wing_mu.init_square_blk(n_abf, 3, 0, 0);
+    desc_wing_mu.init(n_abf, 3, desc_nabf_nabf_opt.mb(), desc_wing_mu.nb(), 0, 0);
     Array_Desc desc_wing(blacs_ctxt_global_h);
     desc_wing.init_square_blk(n_nonsingular - 1, 3, 0, 0);
+    Array_Desc desc_body(blacs_ctxt_global_h);
+    desc_body.init_square_blk(n_nonsingular - 1, n_nonsingular - 1, 0, 0);
+    int mb = std::min(128, desc_body.mb());
+    desc_body.init(n_nonsingular - 1, n_nonsingular - 1, mb, mb, 0, 0);
+    
+    desc_wing.init(n_nonsingular - 1, 3, desc_body.mb(), desc_wing.nb(), 0, 0);
+
     for (int iomega = 0; iomega != this->omega.size(); iomega++)
     {
         auto &wing_tmp = this->wing.at(iomega);
@@ -524,7 +533,8 @@ void diele_func::wing_mu_to_lambda(matrix_m<std::complex<double>> &sqrtveig_blac
         // drop the first column of sqrtveig_blacs, the largest eigenvalue
         ScalapackConnector::pgemm_f('C', 'N', n_lambda, 3, n_abf, 1.0, sqrtveig_blacs.ptr(), 1, 2,
                                     desc_nabf_nabf_opt.desc, wing_mu_tmp.ptr(), 1, 1,
-                                    desc_wing_mu.desc, 0.0, wing_tmp.ptr(), 1, 1, desc_wing.desc);
+                                    desc_wing_mu.desc, 0.0, wing_tmp.ptr(), 1, 1,
+                                    desc_wing.desc);
     }
 
     this->wing_mu.clear();
@@ -1053,6 +1063,8 @@ Array_Desc diele_func::get_body_inv(matrix_m<std::complex<double>> &chi0_block,
 
     Array_Desc desc_body(blacs_ctxt_global_h);
     desc_body.init_square_blk(n_nonsingular - 1, n_nonsingular - 1, 0, 0);
+    int mb = std::min(128,desc_body.mb());
+    desc_body.init(n_nonsingular - 1, n_nonsingular - 1, mb, mb, 0, 0);
     this->body_inv = init_local_mat<complex<double>>(desc_body, MAJOR::COL);
 
     /* for (int ilambda = 0; ilambda < n_nonsingular - 1; ilambda++)
@@ -1071,6 +1083,7 @@ Array_Desc diele_func::get_body_inv(matrix_m<std::complex<double>> &chi0_block,
     Profiler::stop("get_inverse_body_of_chi0");
     return desc_body;
 };
+
 #ifdef ENABLE_NVHPC
 Array_Desc diele_func::get_body_inv_nvhpc(const GpuDeviceStream& gpu_dev_stream, ComplexMatrixDevice& d_chi0_block, const Array_Desc& desc_nabf_nabf_opt)
 {
@@ -1078,6 +1091,8 @@ Array_Desc diele_func::get_body_inv_nvhpc(const GpuDeviceStream& gpu_dev_stream,
     gpu_dev_stream.calSync();
     Array_Desc desc_body(blacs_ctxt_global_h);
     desc_body.init_square_blk(n_nonsingular - 1, n_nonsingular - 1, 0, 0);
+    int mb = std::min(128,desc_body.mb());
+    desc_body.init(n_nonsingular - 1, n_nonsingular - 1, mb, mb, 0, 0);
     this->d_body_inv.set_data(desc_body.m_loc(),desc_body.n_loc(),gpu_dev_stream.stream);
     Array_Desc_Device desc_body_dev(desc_body);
     CudaConnector::pgemr2d_nvhpc(
@@ -1117,15 +1132,17 @@ void diele_func::construct_L(const int ifreq, Array_Desc &desc_body)
     this->wb.resize(3, n_nonsingular - 1, MAJOR::COL);
     Array_Desc desc_wing(blacs_ctxt_global_h);
     desc_wing.init_square_blk(n_nonsingular - 1, 3, 0, 0);
-
+    // opt descriptor for wing
+    desc_wing.init(n_nonsingular - 1, 3, desc_body.mb(), desc_wing.nb(), 0, 0);
+   
     Array_Desc desc_lam_3(blacs_ctxt_global_h);
-    desc_lam_3.init_square_blk(n_nonsingular - 1, 3, 0, 0);
+    desc_lam_3.init(n_nonsingular - 1, 3, desc_body.mb(), desc_wing.nb(), 0, 0);
 
     Array_Desc desc_3_lam(blacs_ctxt_global_h);
-    desc_3_lam.init_square_blk(3, n_nonsingular - 1, 0, 0);
+    desc_3_lam.init(3, n_nonsingular - 1, desc_wing.nb(), desc_body.mb(), 0, 0);
 
     Array_Desc desc_3_3(blacs_ctxt_global_h);
-    desc_3_3.init_square_blk(3, 3, 0, 0);
+    desc_3_3.init(3, 3, desc_wing.nb(), desc_wing.nb(), 0, 0);
 
     auto lam_3 = init_local_mat<complex<double>>(desc_lam_3, MAJOR::COL);
     auto _3_lam = init_local_mat<complex<double>>(desc_3_lam, MAJOR::COL);
@@ -1138,8 +1155,8 @@ void diele_func::construct_L(const int ifreq, Array_Desc &desc_body)
                                 desc_wing.desc, lam_3.ptr(), 1, 1, desc_lam_3.desc, 0.0,
                                 Lind_loc.ptr(), 1, 1, desc_3_3.desc);
     ScalapackConnector::pgemm_f('C', 'N', 3, n_nonsingular - 1, n_nonsingular - 1, 1.0,
-                                wing.at(ifreq).ptr(), 1, 1, desc_wing.desc, body_inv.ptr(), 1, 1,
-                                desc_body.desc, 0.0, _3_lam.ptr(), 1, 1, desc_3_lam.desc);
+                                wing.at(ifreq).ptr(), 1, 1, desc_wing.desc, body_inv.ptr(), 1,
+                                1, desc_body.desc, 0.0, _3_lam.ptr(), 1, 1, desc_3_lam.desc);
 
     for (int i = 0; i != 3; i++)
     {
@@ -1184,126 +1201,70 @@ void diele_func::construct_L_nvhpc(const GpuDeviceStream& gpu_dev_stream, const 
     this->wb.resize(3, n_nonsingular - 1, MAJOR::COL);
     Array_Desc desc_wing(blacs_ctxt_global_h);
     desc_wing.init_square_blk(n_nonsingular - 1, 3, 0, 0);
-    
-    Array_Desc desc_wing_opt(blacs_ctxt_global_h);
-    desc_wing_opt.init(n_nonsingular - 1, 3, desc_body.mb(), desc_wing.nb(), 0, 0);
-    
-
+    // opt descriptor for wing
+    desc_wing.init(n_nonsingular - 1, 3, desc_body.mb(), desc_wing.nb(), 0, 0);
+   
     Array_Desc desc_lam_3(blacs_ctxt_global_h);
-    desc_lam_3.init_square_blk(n_nonsingular - 1, 3, 0, 0);
-
-    Array_Desc desc_lam_3_opt(blacs_ctxt_global_h);
-    desc_lam_3_opt.init(n_nonsingular - 1, 3, desc_body.mb(), desc_lam_3.nb(), 0, 0);
+    desc_lam_3.init(n_nonsingular - 1, 3, desc_body.mb(), desc_wing.nb(), 0, 0);
 
     Array_Desc desc_3_lam(blacs_ctxt_global_h);
-    desc_3_lam.init_square_blk(3, n_nonsingular - 1, 0, 0);
-
-    Array_Desc desc_3_lam_opt(blacs_ctxt_global_h);
-    desc_3_lam_opt.init(3, n_nonsingular - 1, desc_3_lam.mb(), desc_body.nb(), 0, 0);
+    desc_3_lam.init(3, n_nonsingular - 1, desc_wing.nb(), desc_body.mb(), 0, 0);
 
     Array_Desc desc_3_3(blacs_ctxt_global_h);
-    desc_3_3.init_square_blk(3, 3, 0, 0);
+    desc_3_3.init(3, 3, desc_wing.nb(), desc_wing.nb(), 0, 0);
 
     auto lam_3 = init_local_mat<complex<double>>(desc_lam_3, MAJOR::COL);
     auto _3_lam = init_local_mat<complex<double>>(desc_3_lam, MAJOR::COL);
     auto Lind_loc = init_local_mat<complex<double>>(desc_3_3, MAJOR::COL);
-    // printf("rank:%d,ma:%d,na:%d,mb:%d,nb:%d,mc:%d,nc:%d\n",gpu_dev_stream.rank,desc_body.m(),desc_body.n(),desc_wing_opt.m(),desc_wing_opt.n(),desc_lam_3_opt.m(),desc_lam_3_opt.n());
-    // printf("rank:%d,m_loc_a:%d,n_loc_a:%d,m_loc_b:%d,n_loc_b:%d,m_loc_c:%d,n_loc_c:%d\n",gpu_dev_stream.rank,desc_body.m_loc(),desc_body.n_loc(),desc_wing_opt.m_loc(),desc_wing_opt.n_loc(),desc_lam_3_opt.m_loc(),desc_lam_3_opt.n_loc());
-    // printf("rank:%d,mba:%d,nba:%d,mbb:%d,nbb:%d,mbc:%d,nbc:%d\n",gpu_dev_stream.rank,desc_body.mb(),desc_body.nb(),desc_wing_opt.mb(),desc_wing_opt.nb(),desc_lam_3_opt.mb(),desc_lam_3_opt.nb());
     // tmp = head.at(ifreq) - transpose(wing.at(ifreq), true) * body_inv * wing.at(ifreq);
-    #ifdef ENABLE_NVHPC
-    auto wing_ifreq_opt = init_local_mat<complex<double>>(desc_wing_opt, MAJOR::COL);
-    auto lam_3_opt = init_local_mat<complex<double>>(desc_lam_3_opt, MAJOR::COL);
-    auto _3_lam_opt = init_local_mat<complex<double>>(desc_3_lam_opt, MAJOR::COL);
-    ComplexMatrixDevice d_lam_3,d_3_lam,d_Lind_loc;
-    ComplexMatrixDevice d_lam_3_opt,d_3_lam_opt;
-    ComplexMatrixDevice d_wing_ifreq,d_wing_ifreq_opt;
-    d_wing_ifreq.set_data(wing.at(ifreq).nr(),wing.at(ifreq).nc(),wing.at(ifreq).ptr(),gpu_dev_stream.stream);
-    d_wing_ifreq_opt.set_data(desc_wing_opt.m_loc(),desc_wing_opt.n_loc(),gpu_dev_stream.stream);
-    // d_lam_3.set_data(desc_lam_3.m_loc(),desc_lam_3.n_loc(),gpu_dev_stream.stream);
-    d_lam_3_opt.set_data(desc_lam_3_opt.m_loc(),desc_lam_3_opt.n_loc(),gpu_dev_stream.stream);
-    // d_3_lam.set_data(desc_3_lam.m_loc(),desc_3_lam.n_loc(),gpu_dev_stream.stream);
-    d_3_lam_opt.set_data(desc_3_lam_opt.m_loc(),desc_3_lam_opt.n_loc(),gpu_dev_stream.stream);
-    d_Lind_loc.set_data(desc_3_3.m_loc(),desc_3_3.n_loc(),gpu_dev_stream.stream);
-    ScalapackConnector::pgemr2d_f(
-        n_nonsingular-1, 3,
-        wing.at(ifreq).ptr(), 1, 1, desc_wing.desc,
-        wing_ifreq_opt.ptr(), 1, 1, desc_wing_opt.desc,
-        blacs_ctxt_global_h.ictxt    
-    );
-    // CudaConnector::pgemr2d_nvhpc(
-    //     gpu_dev_stream, n_nonsingular-1, 3,
-    //     d_wing_ifreq.ptr(), 1, 1, desc_wing,
-    //     d_wing_ifreq_opt.ptr(), 1, 1, desc_wing,
-    //     CUDA_C_64F
-    // );
-    CUDA_CHECK(cudaMemcpyAsync(d_wing_ifreq_opt.ptr(),wing_ifreq_opt.ptr(),desc_wing_opt.m_loc()*desc_wing_opt.n_loc()*sizeof(std::complex<double>),cudaMemcpyHostToDevice,gpu_dev_stream.stream));
-    std::complex<double> calpha(1.0,0.0),cbeta(0.0,0.0);
     
+    ComplexMatrixDevice d_lam_3,d_3_lam,d_Lind_loc,d_wing_ifreq;
+    
+    d_wing_ifreq.set_data(wing.at(ifreq).nr(),wing.at(ifreq).nc(),wing.at(ifreq).ptr(),gpu_dev_stream.stream);
+    
+    d_lam_3.set_data(desc_lam_3.m_loc(),desc_lam_3.n_loc(),gpu_dev_stream.stream);
+    d_3_lam.set_data(desc_3_lam.m_loc(),desc_3_lam.n_loc(),gpu_dev_stream.stream);
+    d_Lind_loc.set_data(desc_3_3.m_loc(),desc_3_3.n_loc(),gpu_dev_stream.stream);
+    
+    std::complex<double> calpha(1.0,0.0),cbeta(0.0,0.0);
+    printf("successful before gemm1\n");
     CudaConnector::pgemm_nvhpc(
         gpu_dev_stream, CUBLAS_OP_N, CUBLAS_OP_N, n_nonsingular - 1, 3, n_nonsingular - 1,
         &calpha,
         d_body_inv, 1, 1, desc_body,
-        d_wing_ifreq_opt, 1, 1, desc_wing_opt,
+        d_wing_ifreq, 1, 1, desc_wing,
         &cbeta,
-        d_lam_3_opt, 1, 1, desc_lam_3_opt,
+        d_lam_3, 1, 1, desc_lam_3,
         CUBLAS_COMPUTE_64F_PEDANTIC
     );
-    CUDA_CHECK(cudaMemcpyAsync(lam_3_opt.ptr(),d_lam_3_opt.ptr(),desc_lam_3_opt.m_loc()*desc_lam_3_opt.n_loc()*sizeof(std::complex<double>),cudaMemcpyDeviceToHost,gpu_dev_stream.stream));
-    gpu_dev_stream.cudaSync();
-    ScalapackConnector::pgemr2d_f(
-        n_nonsingular-1, 3,
-        lam_3_opt.ptr(), 1, 1, desc_lam_3_opt.desc,
-        lam_3.ptr(), 1, 1, desc_lam_3.desc,
-        blacs_ctxt_global_h.ictxt
-    );
-    gpu_dev_stream.cudaSync();
-    #else
-    ScalapackConnector::pgemm_f('N', 'N', n_nonsingular - 1, 3, n_nonsingular - 1, 1.0,
-                                body_inv.ptr(), 1, 1, desc_body.desc, wing.at(ifreq).ptr(), 1, 1,
-                                desc_wing.desc, 0.0, lam_3.ptr(), 1, 1, desc_lam_3.desc);
-    #endif
-    #ifdef ENABLE_NVHPC
+    printf("successful after gemm1\n");
+    // printf("desc_wing:m_loc:%d,n_loc:%d,lld:%d,mb:%d,nb:%d\n",desc_wing.m_loc(),desc_wing.n_loc(),desc_wing.lld(),desc_wing.mb(),desc_wing.nb());
+    // printf("desc_lam_3:m_loc:%d,n_loc:%d,lld:%d,mb:%d,nb:%d\n",desc_lam_3.m_loc(),desc_lam_3.n_loc(),desc_lam_3.lld(),desc_lam_3.mb(),desc_lam_3.nb());
+    // printf("desc_3_3:m_loc:%d,n_loc:%d,lld:%d,mb:%d,nb:%d\n",desc_3_3.m_loc(),desc_3_3.n_loc(),desc_3_3.lld(),desc_3_3.mb(),desc_3_3.nb());
     CudaConnector::pgemm_nvhpc(
         gpu_dev_stream, CUBLAS_OP_C, CUBLAS_OP_N, 3, 3, n_nonsingular - 1,
         &calpha,
-        d_wing_ifreq_opt, 1, 1, desc_wing_opt,
-        d_lam_3_opt, 1, 1, desc_lam_3_opt,
+        d_wing_ifreq, 1, 1, desc_wing,
+        d_lam_3, 1, 1, desc_lam_3,
         &cbeta,
         d_Lind_loc, 1, 1, desc_3_3,
         CUBLAS_COMPUTE_64F_PEDANTIC
     );
-    CUDA_CHECK(cudaMemcpyAsync(Lind_loc.ptr(),d_Lind_loc.ptr(),desc_3_3.m_loc()*desc_3_3.n_loc()*sizeof(std::complex<double>),cudaMemcpyDeviceToHost,gpu_dev_stream.stream));
-    gpu_dev_stream.cudaSync();
-    #else
-    ScalapackConnector::pgemm_f('C', 'N', 3, 3, n_nonsingular - 1, 1.0, wing.at(ifreq).ptr(), 1, 1,
-                                desc_wing.desc, lam_3.ptr(), 1, 1, desc_lam_3.desc, 0.0,
-                                Lind_loc.ptr(), 1, 1, desc_3_3.desc);
-    #endif
-    #ifndef ENABLE_NVHPC
+    printf("successful after gemm2\n");
     CudaConnector::pgemm_nvhpc(
         gpu_dev_stream, CUBLAS_OP_C, CUBLAS_OP_N, 3, n_nonsingular - 1, n_nonsingular - 1,
         &calpha,
-        d_wing_ifreq_opt, 1, 1, desc_wing_opt,
+        d_wing_ifreq, 1, 1, desc_wing,
         d_body_inv, 1, 1, desc_body,
         &cbeta,
-        d_3_lam_opt, 1, 1, desc_3_lam_opt,
+        d_3_lam, 1, 1, desc_3_lam,
         CUBLAS_COMPUTE_64F_PEDANTIC
     );
-    CUDA_CHECK(cudaMemcpyAsync(_3_lam_opt.ptr(),d_3_lam_opt.ptr(),desc_3_lam_opt.m_loc()*desc_3_lam_opt.n_loc()*sizeof(std::complex<double>),cudaMemcpyDeviceToHost,gpu_dev_stream.stream));
+    printf("successful after gemm3\n");
+    CUDA_CHECK(cudaMemcpyAsync(lam_3.ptr(), d_lam_3.ptr(), desc_lam_3.m_loc() * desc_lam_3.n_loc() * sizeof(std::complex<double>), cudaMemcpyDeviceToHost, gpu_dev_stream.stream));
+    CUDA_CHECK(cudaMemcpyAsync(_3_lam.ptr(), d_3_lam.ptr(), desc_3_lam.m_loc() * desc_3_lam.n_loc() * sizeof(std::complex<double>), cudaMemcpyDeviceToHost, gpu_dev_stream.stream));
+    CUDA_CHECK(cudaMemcpyAsync(Lind_loc.ptr(), d_Lind_loc.ptr(), desc_3_3.m_loc() * desc_3_3.n_loc() * sizeof(std::complex<double>), cudaMemcpyDeviceToHost, gpu_dev_stream.stream));
     gpu_dev_stream.cudaSync();
-    ScalapackConnector::pgemr2d_f(
-        3, n_nonsingular-1,
-        _3_lam_opt.ptr(), 1, 1, desc_3_lam_opt.desc,
-        _3_lam.ptr(), 1, 1, desc_3_lam.desc,
-        blacs_ctxt_global_h.ictxt
-    );
-    #else
-    ScalapackConnector::pgemm_f('C', 'N', 3, n_nonsingular - 1, n_nonsingular - 1, 1.0,
-                                wing.at(ifreq).ptr(), 1, 1, desc_wing.desc, body_inv.ptr(), 1, 1,
-                                desc_body.desc, 0.0, _3_lam.ptr(), 1, 1, desc_3_lam.desc);
-    #endif
-
     for (int i = 0; i != 3; i++)
     {
         auto loc_i = desc_3_3.indx_g2l_r(i);
@@ -1499,12 +1460,9 @@ void diele_func::cal_eps(const int ifreq, Array_Desc &desc_nabf_nabf_opt, Array_
             chi0(ilo, jlo) = result;
         }
     }
-    ScalapackConnector::pgeadd_f(
-        'N', n_nonsingular - 1, n_nonsingular - 1, 
-        1.0, 
-        body_inv.ptr(), 1, 1, desc_body.desc, 
-        1.0, 
-        chi0.ptr(), 2, 2, desc_nabf_nabf_opt.desc);
+    
+    ScalapackConnector::pgeadd_f('N', n_nonsingular - 1, n_nonsingular - 1, 1.0, body_inv.ptr(), 1,
+                                 1, desc_body.desc, 1.0, chi0.ptr(), 2, 2, desc_nabf_nabf_opt.desc);
     Profiler::stop("cal_inverse_dielectric_matrix_ij");
     if (mpi_comm_global_h.is_root())
         std::cout << "* Success: calculate average inverse dielectric matrix no." << ifreq + 1
