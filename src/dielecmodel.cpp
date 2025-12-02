@@ -514,7 +514,7 @@ void diele_func::wing_mu_to_lambda(matrix_m<std::complex<double>> &sqrtveig_blac
     for (int iomega = 0; iomega != this->omega.size(); iomega++)
     {
         auto &wing_tmp = this->wing.at(iomega);
-        wing_tmp = init_local_mat<complex<double>>(desc_wing, MAJOR::COL);
+        wing_tmp = init_local_mat<complex<double>>(desc_wing_opt, MAJOR::COL);
         // TODO: reconstruct wing_mu
         auto wing_mu_tmp = init_local_mat<complex<double>>(desc_wing_mu, MAJOR::COL);
         for (int alpha = 0; alpha != 3; alpha++)
@@ -1150,9 +1150,9 @@ void diele_func::construct_L(const int ifreq, Array_Desc &desc_body)
     // tmp = head.at(ifreq) - transpose(wing.at(ifreq), true) * body_inv * wing.at(ifreq);
     ScalapackConnector::pgemm_f('N', 'N', n_nonsingular - 1, 3, n_nonsingular - 1, 1.0,
                                 body_inv.ptr(), 1, 1, desc_body.desc, wing.at(ifreq).ptr(), 1, 1,
-                                desc_wing.desc, 0.0, lam_3.ptr(), 1, 1, desc_lam_3.desc);
+                                desc_wing_opt.desc, 0.0, lam_3.ptr(), 1, 1, desc_lam_3.desc);
     ScalapackConnector::pgemm_f('C', 'N', 3, 3, n_nonsingular - 1, 1.0, wing.at(ifreq).ptr(), 1, 1,
-                                desc_wing.desc, lam_3.ptr(), 1, 1, desc_lam_3.desc, 0.0,
+                                desc_wing_opt.desc, lam_3.ptr(), 1, 1, desc_lam_3.desc, 0.0,
                                 Lind_loc.ptr(), 1, 1, desc_3_3.desc);
     ScalapackConnector::pgemm_f('C', 'N', 3, n_nonsingular - 1, n_nonsingular - 1, 1.0,
                                 wing.at(ifreq).ptr(), 1, 1, desc_wing.desc, body_inv.ptr(), 1,
