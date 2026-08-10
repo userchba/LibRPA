@@ -46,7 +46,7 @@ void run_case(const ddla::DdlaHandle_t& handle, const ddla::DdlaDesc& desc,
     auto h_A = make_local<T>(desc, matrix);
     DeviceBuffer<T> d_A(handle, h_A.size());
     upload(handle, d_A.ptr, h_A);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
 
     std::vector<int> ipiv(desc.m_loc(), -1);
     int info = -1;
@@ -56,7 +56,9 @@ void run_case(const ddla::DdlaHandle_t& handle, const ddla::DdlaDesc& desc,
                             + "/" + case_name + ")";
     require_close(handle, label + " info", std::abs(info - expected_info), 0.0);
     if(expected_pivot >= 0){
-        const double pivot_error = handle->myprow_ == 0
+        int myprow = 0, mypcol_unused = 0;
+        ddla_get_grid_coords(handle, myprow, mypcol_unused);
+        const double pivot_error = myprow == 0
                                  ? std::abs(ipiv[0] - expected_pivot) : 0.0;
         require_close(handle, label + " pivot", pivot_error, 0.0);
     }
@@ -66,6 +68,9 @@ template <typename T>
 void check_scalar_type(const ddla::DdlaHandle_t& handle,
                        const ddla::DdlaDesc& desc, int n, int nb)
 {
+    int nprows = 0, npcols_unused = 0;
+    ddla_get_grid_dims(handle, nprows, npcols_unused);
+
     run_case<T>(handle, desc, "normal", std::min(nb, n), [=](int i, int j){
         if(i == j){
             return scalar<T>(4.0 + 0.1 * i);
@@ -74,7 +79,7 @@ void check_scalar_type(const ddla::DdlaHandle_t& handle,
                          0.01 * ((2 * i + j) % 7 - 3));
     }, 0);
 
-    const int remote_row = handle->nprows_ > 1 ? nb : 1;
+    const int remote_row = nprows > 1 ? nb : 1;
     run_case<T>(handle, desc, "cross-row", 1, [=](int i, int j){
         if(j == 0){
             return scalar<T>(i == remote_row ? 9.0 : 1.0 / (i + 1));
@@ -82,7 +87,7 @@ void check_scalar_type(const ddla::DdlaHandle_t& handle,
         return i == j ? scalar<T>(2.0) : scalar<T>(0.0);
     }, 0, remote_row + 1);
 
-    const int competing_row = handle->nprows_ > 1 ? nb : 3;
+    const int competing_row = nprows > 1 ? nb : 3;
     run_case<T>(handle, desc, "tie", 1, [=](int i, int j){
         if(j == 0){
             if(i == 0){

@@ -4,69 +4,70 @@ using namespace api_grid_test;
 
 void check_device_memory(const ddla::DdlaHandle_t& handle, const Shape&)
 {
+    runtimeStream_t stream = reinterpret_cast<runtimeStream_t>(ddla_get_stream(handle));
     double host_value = 0.0;
 
     double* typed_sync = &host_value;
-    DEVICE_CHECK(deviceMalloc(&typed_sync, 0));
-    require_close(handle, "deviceMalloc(typed, zero)",
+    RUNTIME_CHECK(runtimeMalloc(&typed_sync, 0));
+    require_close(handle, "runtimeMalloc(typed, zero)",
                   typed_sync == nullptr ? 0.0 : 1.0, 0.0);
-    DEVICE_CHECK(deviceFree(typed_sync));
+    RUNTIME_CHECK(runtimeFree(typed_sync));
 
     void* raw_sync = &host_value;
-    DEVICE_CHECK(deviceMalloc(&raw_sync, 0));
-    require_close(handle, "deviceMalloc(void, zero)",
+    RUNTIME_CHECK(runtimeMalloc(&raw_sync, 0));
+    require_close(handle, "runtimeMalloc(void, zero)",
                   raw_sync == nullptr ? 0.0 : 1.0, 0.0);
-    DEVICE_CHECK(deviceFree(raw_sync));
+    RUNTIME_CHECK(runtimeFree(raw_sync));
 
     double* typed_async = &host_value;
-    DEVICE_CHECK(deviceMallocAsync(&typed_async, 0, handle->stream));
-    require_close(handle, "deviceMallocAsync(typed, zero)",
+    RUNTIME_CHECK(runtimeMallocAsync(&typed_async, 0, stream));
+    require_close(handle, "runtimeMallocAsync(typed, zero)",
                   typed_async == nullptr ? 0.0 : 1.0, 0.0);
-    DEVICE_CHECK(deviceFreeAsync(typed_async, handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(typed_async, stream));
 
     void* raw_async = &host_value;
-    DEVICE_CHECK(deviceMallocAsync(&raw_async, 0, handle->stream));
-    require_close(handle, "deviceMallocAsync(void, zero)",
+    RUNTIME_CHECK(runtimeMallocAsync(&raw_async, 0, stream));
+    require_close(handle, "runtimeMallocAsync(void, zero)",
                   raw_async == nullptr ? 0.0 : 1.0, 0.0);
-    DEVICE_CHECK(deviceFreeAsync(raw_async, handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(raw_async, stream));
 
-    DEVICE_CHECK(deviceFree(nullptr));
-    DEVICE_CHECK(deviceFreeAsync(nullptr, handle->stream));
+    RUNTIME_CHECK(runtimeFree(nullptr));
+    RUNTIME_CHECK(runtimeFreeAsync(nullptr, stream));
 
-    const deviceError_t null_sync_status = deviceMalloc(nullptr, 0);
-    require_close(handle, "deviceMalloc(null output)",
-                  null_sync_status != deviceSuccess ? 0.0 : 1.0, 0.0);
-    (void)deviceGetLastError();
+    const runtimeError_t null_sync_status = runtimeMalloc(nullptr, 0);
+    require_close(handle, "runtimeMalloc(null output)",
+                  null_sync_status != runtimeSuccess ? 0.0 : 1.0, 0.0);
+    (void)runtimeGetLastError();
 
-    const deviceError_t null_async_status = deviceMallocAsync(nullptr, 0, handle->stream);
-    require_close(handle, "deviceMallocAsync(null output)",
-                  null_async_status != deviceSuccess ? 0.0 : 1.0, 0.0);
-    (void)deviceGetLastError();
+    const runtimeError_t null_async_status = runtimeMallocAsync(nullptr, 0, stream);
+    require_close(handle, "runtimeMallocAsync(null output)",
+                  null_async_status != runtimeSuccess ? 0.0 : 1.0, 0.0);
+    (void)runtimeGetLastError();
 
     double* d_sync = nullptr;
-    DEVICE_CHECK(deviceMalloc(&d_sync, sizeof(double)));
-    require_close(handle, "deviceMalloc(typed, nonzero)",
+    RUNTIME_CHECK(runtimeMalloc(&d_sync, sizeof(double)));
+    require_close(handle, "runtimeMalloc(typed, nonzero)",
                   d_sync != nullptr ? 0.0 : 1.0, 0.0);
-    DEVICE_CHECK(deviceFree(d_sync));
+    RUNTIME_CHECK(runtimeFree(d_sync));
 
     void* d_raw_sync = nullptr;
-    DEVICE_CHECK(deviceMalloc(&d_raw_sync, sizeof(double)));
-    require_close(handle, "deviceMalloc(void, nonzero)",
+    RUNTIME_CHECK(runtimeMalloc(&d_raw_sync, sizeof(double)));
+    require_close(handle, "runtimeMalloc(void, nonzero)",
                   d_raw_sync != nullptr ? 0.0 : 1.0, 0.0);
-    DEVICE_CHECK(deviceFree(d_raw_sync));
+    RUNTIME_CHECK(runtimeFree(d_raw_sync));
 
     double* d_async = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(&d_async, sizeof(double), handle->stream));
-    require_close(handle, "deviceMallocAsync(typed, nonzero)",
+    RUNTIME_CHECK(runtimeMallocAsync(&d_async, sizeof(double), stream));
+    require_close(handle, "runtimeMallocAsync(typed, nonzero)",
                   d_async != nullptr ? 0.0 : 1.0, 0.0);
-    DEVICE_CHECK(deviceFreeAsync(d_async, handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_async, stream));
 
     void* d_raw_async = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(&d_raw_async, sizeof(double), handle->stream));
-    require_close(handle, "deviceMallocAsync(void, nonzero)",
+    RUNTIME_CHECK(runtimeMallocAsync(&d_raw_async, sizeof(double), stream));
+    require_close(handle, "runtimeMallocAsync(void, nonzero)",
                   d_raw_async != nullptr ? 0.0 : 1.0, 0.0);
-    DEVICE_CHECK(deviceFreeAsync(d_raw_async, handle->stream));
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_raw_async, stream));
+    check_ddla_sync(handle);
 }
 
 int main(int argc, char** argv)

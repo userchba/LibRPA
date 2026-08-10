@@ -3,12 +3,13 @@
 #include <vector>
 #include <algorithm>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
 #include <ddla/gemm.h>
 #include <ddla/trsm.h>
 #include <ddla/getrf.h>
 #include <ddla/laswp.h>
-#include <ddla/ddla_comm.h>
+#include "comm_traits.h"
 
 namespace ddla {
 
@@ -17,12 +18,16 @@ namespace ddla {
  *
  * Right-looking block algorithm: at each step only the nb×nb diagonal block
  * is factored with getrf (local, single-GPU).  Pivoting is "block-partial" --
- * row swaps are confined to the diagonal block and then applied to the right
- * panel before the trailing-submatrix update.
+ * row swaps are confined to the diagonal block and then applied to the full
+ * rows (the already-factored columns as well as the right panel) before the
+ * trailing-submatrix update.  The output is a standard LU factorization
+ * A = P*L*U: every block's row swaps are applied to the whole row, including
+ * the L part in the already-factored columns.
  *
  * For each panel step k (global column n_s):
  *   1. Panel LU:     P1 * A11 = L1 * U1          (getrf on local nb×nb block)
- *   2. Apply pivot:  swap rows in right panel    (desolverLaswp with local ipiv)
+ *   2. Apply pivot:  swap rows in right panel and in the factored columns
+ *                    [0, n_s) of the current block rows   (desolverLaswp)
  *   3. Compute U12:  U12 = L1^{-1} * B           (trsm LEFT/LOWER/UNIT)
  *   4. Compute L21:  L21 = C * U1^{-1}           (trsm RIGHT/UPPER/NON-UNIT)
  *   5. Update trail: D <- D - L21 * U12          (gemm)
@@ -37,14 +42,8 @@ void pgetrf_bpiv(
 {
     assert(m <= array_descA.m()&& n <= array_descA.n());
     DdlaHandle_t ddla_handle = array_descA.ddla_handle();
+    detail::require_gpu_backend(ddla_handle, "pgetrf_bpiv");
 
-    #ifdef DDLA_USE_CCL
-    ncclComm_t row_nccl_comm = ddla_handle->nccl_row_comm;
-    ncclComm_t col_nccl_comm = ddla_handle->nccl_col_comm;
-    #else
-    MPI_Comm row_nccl_comm = ddla_handle->row_comm;
-    MPI_Comm col_nccl_comm = ddla_handle->col_comm;
-    #endif
 
     int nprows = array_descA.nprows();
     int npcols = array_descA.npcols();
@@ -58,7 +57,7 @@ void pgetrf_bpiv(
     int m_loc = num_loc(m, array_descA.mb(), myprow, array_descA.irsrc(), nprows);
     int n_loc = num_loc(n, array_descA.nb(), mypcol, array_descA.icsrc(), npcols);
 
-    deviceStream_t stream = ddla_handle->stream;
+    runtimeStream_t stream = ddla_handle->stream;
     deblasHandle_t blasH = ddla_handle->blasH;
     desolverHandle_t solverH = ddla_handle->solverH;
 
@@ -68,14 +67,14 @@ void pgetrf_bpiv(
 
     // Temp buffers
     T* d_temp_block;
-    DEVICE_CHECK(deviceMallocAsync(&d_temp_block, sizeof(T) * nb * nb, stream));
+    RUNTIME_CHECK(runtimeMallocAsync(&d_temp_block, sizeof(T) * nb * nb, stream));
     T* d_temp_L;
-    DEVICE_CHECK(deviceMallocAsync(&d_temp_L, sizeof(T) * m_loc * nb, stream));
+    RUNTIME_CHECK(runtimeMallocAsync(&d_temp_L, sizeof(T) * m_loc * nb, stream));
     T* d_temp_U;
-    DEVICE_CHECK(deviceMallocAsync(&d_temp_U, sizeof(T) * nb * n_loc, stream));
+    RUNTIME_CHECK(runtimeMallocAsync(&d_temp_U, sizeof(T) * nb * n_loc, stream));
 
     int* d_info = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(&d_info, sizeof(int), stream));
+    RUNTIME_CHECK(runtimeMallocAsync(&d_info, sizeof(int), stream));
 
     info = 0;
 
@@ -97,18 +96,45 @@ void pgetrf_bpiv(
 
         if (myprow == owner_row && mypcol == owner_col) {
             SOLVER_CHECK(desolverGetrf(solverH, nb_real, nb_real, d_A + i_loc + j_loc * lld, lld, d_ipiv + mm_row_start, d_info));
-            DEVICE_CHECK(deviceMemcpyAsync(&info, d_info, sizeof(int), deviceMemcpyDeviceToHost, stream));
-            DEVICE_CHECK(deviceStreamSynchronize(stream));
+            RUNTIME_CHECK(runtimeMemcpyAsync(&info, d_info, sizeof(int), runtimeMemcpyDeviceToHost, stream));
+            RUNTIME_CHECK(runtimeStreamSynchronize(stream));
         }
 
         MPI_CHECK(MPI_Bcast(&info, 1, MPI_INT, ddla_handle->rc_to_rank(owner_row, owner_col), ddla_handle->comm));
         if (info != 0) {
             info += n_s;
-            printf("myid:%d, pgetrf_bpiv failed at %d\n", ddla_handle->myid, info);
             break;
         }
-        if(n_s + nb_real == n)
+        if(n_s + nb_real == n){
+            // Last block: no right panel, but for a standard A = P*L*U the
+            // row swaps must still be applied to the already-factored columns
+            // [0, n_s).  getrf wrote these pivots only on (owner_row,
+            // owner_col) -- the loop breaks before step 2's row broadcast --
+            // so broadcast them first.
+            const int l_cols = num_loc(n_s, nb, mypcol, array_descA.icsrc(), npcols);
+            if(myprow == owner_row){
+                commBcast(ddla_handle, CommScope::Row, d_ipiv + mm_row_start, (std::size_t)nb_real, owner_col);
+                if(l_cols > 0){
+#ifdef DDLA_USE_CUDA
+                    SOLVER_CHECK(desolverLaswp(
+                        solverH, l_cols,
+                        d_A + mm_row_start, lld,
+                        1, nb_real,   // 1-based local row range
+                        d_ipiv + mm_row_start, 1
+                    ));
+#endif
+#ifdef DDLA_USE_HIP
+                    BLAS_CHECK(deblasLaswp(
+                        blasH, l_cols,
+                        d_A + mm_row_start, lld,
+                        1, nb_real,   // 1-based local row range
+                        d_ipiv + mm_row_start, 1
+                    ));
+#endif
+                }
+            }
             break;
+        }
 
         // ================================================================
         // Step 2: Apply pivot to the right panel  B <- P1 * B
@@ -124,17 +150,41 @@ void pgetrf_bpiv(
         // Step 3: Extract/broadcast the factored diagonal block (L1+U1)
         // ================================================================
         if (myprow == owner_row && mypcol == owner_col) {
-            DEVICE_CHECK(deviceMemcpy2DAsync(
+            RUNTIME_CHECK(runtimeMemcpy2DAsync(
                 d_temp_block, nb_real * sizeof(T),
                 d_A + i_loc + j_loc * lld, lld * sizeof(T),
                 nb_real * sizeof(T), nb_real,
-                deviceMemcpyDeviceToDevice, stream
+                runtimeMemcpyDeviceToDevice, stream
             ));
         }
         int right_panel_col_start = (j_loc >= 0) ? (j_loc + nb_real) : mm_col_start;
         if (myprow == owner_row) {
-            CCL_CHECK(cclBcast(d_temp_block, nb_real * nb_real, owner_col, row_nccl_comm, stream));
-            CCL_CHECK(cclBcast(d_ipiv + mm_row_start, nb_real, owner_col, row_nccl_comm, stream));
+            commBcast(ddla_handle, CommScope::Row, d_temp_block, (std::size_t)nb_real * nb_real, owner_col);
+            commBcast(ddla_handle, CommScope::Row, d_ipiv + mm_row_start, (std::size_t)nb_real, owner_col);
+            // Apply the row swaps to the already-factored columns [0, n_s) of
+            // this block's rows, so the factorization is a standard
+            // A = P*L*U (the L part is permuted too).  These local columns
+            // hold no data of the current trailing submatrix, so this is a
+            // purely local laswp.
+            const int l_cols = num_loc(n_s, nb, mypcol, array_descA.icsrc(), npcols);
+            if(l_cols > 0){
+#ifdef DDLA_USE_CUDA
+                SOLVER_CHECK(desolverLaswp(
+                    solverH, l_cols,
+                    d_A + mm_row_start, lld,
+                    1, nb_real,   // 1-based local row range
+                    d_ipiv + mm_row_start, 1
+                ));
+#endif
+#ifdef DDLA_USE_HIP
+                BLAS_CHECK(deblasLaswp(
+                    blasH, l_cols,
+                    d_A + mm_row_start, lld,
+                    1, nb_real,   // 1-based local row range
+                    d_ipiv + mm_row_start, 1
+                ));
+#endif
+            }
             // Apply row swaps to the local right panel columns [n_s+nb_real, n).
             // The pivoted rows in the local matrix start at i_loc.
             // Number of local columns in the right panel: those from n_s+nb_real to n-1.
@@ -172,11 +222,11 @@ void pgetrf_bpiv(
                     d_temp_block, nb_real,
                     d_right_panel, lld
                 ));
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_temp_U, nb_real * sizeof(T),
                     d_right_panel, lld * sizeof(T),
                     nb_real * sizeof(T), n_loc - right_panel_col_start,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
             }
             
@@ -186,7 +236,7 @@ void pgetrf_bpiv(
         // ================================================================
         int left_panel_row_start = (i_loc >= 0) ? (i_loc + nb_real) : mm_row_start;
         if(mypcol == owner_col){
-            CCL_CHECK(cclBcast(d_temp_block, nb_real * nb_real, owner_row, col_nccl_comm, stream));
+            commBcast(ddla_handle, CommScope::Col, d_temp_block, (std::size_t)nb_real * nb_real, owner_row);
             if(m_loc > left_panel_row_start){
                 T* d_left_panel = d_A + mm_col_start * lld + left_panel_row_start;
                 BLAS_CHECK(deblasTrsm(
@@ -197,19 +247,19 @@ void pgetrf_bpiv(
                     d_temp_block, nb_real,
                     d_left_panel, lld
                 ));
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_temp_L, (m_loc - left_panel_row_start) * sizeof(T),
                     d_left_panel, lld * sizeof(T),
                     (m_loc - left_panel_row_start) * sizeof(T), nb_real,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
             }
         }
         if(n_loc > right_panel_col_start) {
-            CCL_CHECK(cclBcast(d_temp_U, nb_real * (n_loc - right_panel_col_start), owner_row, col_nccl_comm, stream));
+            commBcast(ddla_handle, CommScope::Col, d_temp_U, (std::size_t)nb_real * (n_loc - right_panel_col_start), owner_row);
         }
         if(m_loc > left_panel_row_start){
-            CCL_CHECK(cclBcast(d_temp_L, (m_loc - left_panel_row_start) * nb_real, owner_col, row_nccl_comm, stream));
+            commBcast(ddla_handle, CommScope::Row, d_temp_L, (std::size_t)(m_loc - left_panel_row_start) * nb_real, owner_col);
         }
 
         // ================================================================
@@ -219,18 +269,16 @@ void pgetrf_bpiv(
         int trailing_n = n_loc - right_panel_col_start;
 
         if(trailing_m > 0 && trailing_n > 0){
-            BLAS_CHECK(deblasGemm(
-                blasH, DEBLAS_OP_N, DEBLAS_OP_N,
+            gemm<DdlaBackend::GPU, T>(ddla_handle, 'N', 'N',
                 trailing_m, trailing_n, nb_real,
                 T(-1.0),
                 d_temp_L, trailing_m,
                 d_temp_U, nb_real,
                 T(1.0),
-                d_A + left_panel_row_start + right_panel_col_start * lld, lld
-            ));
+                d_A + left_panel_row_start + right_panel_col_start * lld, lld);
         }
 
-        DEVICE_CHECK(deviceStreamSynchronize(stream));
+        RUNTIME_CHECK(runtimeStreamSynchronize(stream));
 
         // Advance local pointers for next panel
         if (i_loc >= 0)
@@ -239,11 +287,11 @@ void pgetrf_bpiv(
             mm_col_start += nb;
     }
 
-    DEVICE_CHECK(deviceFreeAsync(d_temp_block, stream));
-    DEVICE_CHECK(deviceFreeAsync(d_temp_L, stream));
-    DEVICE_CHECK(deviceFreeAsync(d_temp_U, stream));
-    DEVICE_CHECK(deviceFreeAsync(d_info, stream));
-    DEVICE_CHECK(deviceStreamSynchronize(stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_temp_block, stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_temp_L, stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_temp_U, stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_info, stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(stream));
 }
 
 // Explicit instantiations

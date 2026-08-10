@@ -1,583 +1,375 @@
-# LibDDLA — Distributed Device Linear Algebra Library
-
-LibDDLA is a C++ template library for **distributed dense linear algebra on GPU
-devices**. It supports both NVIDIA CUDA and AMD HIP/ROCm backends through a
-unified programming interface.
-
-It provides **ScaLAPACK-style APIs** with 2D block-cyclic data distribution
-over an MPI process grid, and uses **NCCL/RCCL** for inter-process GPU
-communication.
-
----
-
-## Features
-
-- Multi-GPU distributed computing via MPI + NCCL/RCCL
-- Unified CUDA/HIP backend — write once, run on NVIDIA or AMD GPUs
-- Template-based — supports `float`, `double`, `std::complex<float>`,
-  `std::complex<double>`
-- ScaLAPACK-compatible naming and semantics — easy migration from CPU to GPU
-
----
-
-## Supported Routines
-
-| Function   | Description |
-|------------|-------------|
-| `pgetrf`   | LU factorization with partial (row) pivoting |
-| `pgetrs`   | Triangular solve using LU factors |
-| `pgesv`    | Linear-system solver (driver: LU + solve) |
-| `pgetrf_nopiv` | LU factorization without pivoting (multi-process) |
-| `pgetrs_nopiv` | Triangular solve using LU factors without pivoting |
-| `pgesv_nopiv`  | Linear-system solver without pivoting (driver) |
-| `ptrtrs`   | Distributed triangular solve |
-| `pgemm`    | Matrix multiplication: C = alpha*op(A)*op(B) + beta*C |
-| `pgeadd`   | Matrix addition: C = alpha*op(A) + beta*op(B) |
-| `plapiv`   | Apply row-pivot permutation |
-| `pswap`    | Swap rows or columns between distributed matrices |
-| `ppotrf`   | Cholesky factorization for Hermitian positive-definite matrices |
-| `ppotrs`   | Triangular solve using Cholesky factor |
-| `pposv`    | Positive-definite system solver (driver: Cholesky + solve) |
-
----
-
-
-## Mathematical Foundations
-
-Below are the block-wise derivations for each supported routine.  All matrices are assumed to be distributed in 2D block-cyclic fashion; the formulas describe the **local algebraic operations** that the library performs panel-by-panel.
-
-### `pgetrf` — LU Factorization with Partial Pivoting
-
-Given a square (or tall) matrix $A$, we seek a permutation matrix $P$, a unit lower-triangular matrix $L$, and an upper-triangular matrix $U$ such that
-
-$$
-PA=LU
-$$
-Partition the current trailing submatrix at step k as
-$$
-A = \begin{pmatrix} A_{11} & A_{12} \\ A_{21} & A_{22} \end{pmatrix}
-$$
-
-
-where $A_{11}$ is the $nb \times nb$ diagonal panel.  The factorization proceeds in three stages:
-
-1. **Panel factorization** (`pgetf2`):  
-   $$
-   A_{11} = L_{11} U_{11}
-   $$
-   
-   (with partial row pivoting stored in `ipiv`).
-   
-2. **Trailing-submatrix update**:
-   $$U_{12} = L_{11}^{-1} A_{12}$$
-   $$L_{21} = A_{21} U_{11}^{-1}$$
-
-3. **Schur-complement update**:
-   $$A_{22} \leftarrow A_{22} - L_{21} U_{12}$$
-
-The updated $A_{22}$ becomes the new trailing matrix for the next step, i.e. $A_{22} = L_{22} U_{22}$ is factored recursively.
-
----
-
-### `pgetrs` — Solve Using LU Factors
-
-With $PA = LU$ already computed, solve $AX = B$:
-
-$$AX = B \quad\Longrightarrow\quad PAX = PB$$
-
-Substitute $PA = LU$:
-
-$$LU X = PB$$
-
-Introduce the intermediate $Y = UX$:
-
-1. **Forward substitution** (unit lower triangular):
-   $$LY = PB$$
-
-2. **Backward substitution** (upper triangular):
-   $$UX = Y$$
-
-In the distributed implementation `pgetrs` first applies the pivot permutation `plapiv`, then calls `ptrtrs` twice (first with $L$, then with $U$).
-
----
-
-### `pgesv` — Linear System Solver (LU Driver)
-
-This is the driver routine that composes the two steps above:
-
-$$AX = B \xrightarrow{\text{pgetrf}} PA = LU \xrightarrow{\text{plapiv}} PB \xrightarrow{\text{ptrtrs}(L)} Y \xrightarrow{\text{ptrtrs}(U)} X$$
-
----
-
-### No-Pivot LU Variants (`pgetrf_nopiv`, `pgetrs_nopiv`, `pgesv_nopiv`)
-
-For matrices that are known to be diagonally dominant or otherwise structurally
-safe without pivoting, LibDDLA provides no-pivot counterparts to the LU family.
-The algorithms are identical to the pivoted versions except that the row
-permutation $P$ is omitted, which removes the distributed pivot search, the
-row swaps, and the pivot bookkeeping.
-
-#### `pgetrf_nopiv` — LU Factorization without Pivoting
-
-Given a square matrix $A$, we seek a unit lower-triangular matrix $L$ and an
-upper-triangular matrix $U$ such that
-
-$$A = LU$$
-
-Partition the current trailing submatrix at step $k$ as
-
-$$A = \begin{pmatrix} A_{11} & A_{12} \\ A_{21} & A_{22} \end{pmatrix}$$
-
-where $A_{11}$ is the $nb \times nb$ diagonal panel.  The right-looking block
-algorithm proceeds in four stages:
-
-1. **Diagonal panel factorization** (local single-GPU `getrf_nopiv`):
-   $$A_{11} = L_{11} U_{11}$$
-
-2. **Broadcast the factored panel** to the owning process row and column via
-   NCCL/RCCL row/column communicators, so that every process holding $A_{12}$
-   or $A_{21}$ receives the updated $A_{11} = L_{11} U_{11}$.
-
-3. **Trailing-submatrix update** (triangular solve, `trsm`):
-   $$U_{12} = L_{11}^{-1} A_{12}$$
-   $$L_{21} = A_{21} U_{11}^{-1}$$
-
-4. **Schur-complement update** (matrix multiply, `gemm`):
-   $$A_{22} \leftarrow A_{22} - L_{21} U_{12}$$
-
-The updated $A_{22}$ becomes the new trailing matrix for the next step, i.e.
-$A_{22} = L_{22} U_{22}$ is factored recursively.  Because no pivoting is
-performed, the panel factorization can use a large block size (up to the size
-that fits on a single GPU), which reduces the number of communication rounds
-and yields higher throughput than the pivoted variants for numerically stable
-inputs.
-
-#### `pgetrs_nopiv` — Solve Using LU Factors without Pivoting
-
-With $A = LU$ already computed, solve $AX = B$:
-
-Substitute $A = LU$:
-
-$$LU X = B$$
-
-Introduce the intermediate $Y = UX$:
-
-1. **Forward substitution** (unit lower triangular):
-   $$LY = B$$
-
-2. **Backward substitution** (upper triangular):
-   $$UX = Y$$
-
-In the distributed implementation `pgetrs_nopiv` calls `ptrtrs` twice: first
-with the lower-triangular factor $L$ (unit diagonal, no transpose), then with
-the upper-triangular factor $U$ (no transpose).  No pivot permutation is
-applied.
-
-#### `pgesv_nopiv` — Linear System Solver without Pivoting (Driver)
-
-This is the no-pivot driver routine that composes the two steps above:
-
-$$AX = B \xrightarrow{\text{pgetrf_nopiv}} A = LU
-       \xrightarrow{\text{ptrtrs}(L)} Y
-       \xrightarrow{\text{ptrtrs}(U)} X$$
-
----
-
-### `ptrtrs` — Distributed Triangular Solve
-
-Solve $TX = B$ where $T$ is triangular.  For a lower-triangular $T$ partitioned block-wise:
-
-$$\begin{pmatrix} T_{11} & 0 \\ T_{21} & T_{22} \end{pmatrix} \begin{pmatrix} X_1 \\ X_2 \end{pmatrix} = \begin{pmatrix} B_1 \\ B_2 \end{pmatrix}$$
-
-The solution is obtained block-by-block:
-
-1. $$T_{11} X_1 = B_1 \quad\Longrightarrow\quad X_1 = T_{11}^{-1} B_1$$
-2. $$X_2 = T_{22}^{-1}(B_2 - T_{21} X_1)$$
-
-For an upper-triangular $T$ the sweep direction is reversed:
-
-1. $$T_{22} X_2 = B_2 \quad\Longrightarrow\quad X_2 = T_{22}^{-1} B_2$$
-2. $$X_1 = T_{11}^{-1}(B_1 - T_{12} X_2)$$
-
----
-
-### `pgemm` — Distributed Matrix Multiplication
-
-General matrix-matrix product:
-
-$$C = \alpha \cdot \text{op}(A) \cdot \text{op}(B) + \beta \cdot C$$
-
-LibDDLA implements the **SUMMA** algorithm.  The local block $C_{ij}$ is accumulated over panels of width $nb$:
-
-$$C_{ij} = \beta C_{ij} + \sum_{k} \alpha \cdot A_{ik}^{\text{op}} \cdot B_{kj}^{\text{op}}$$
-
-where $A_{ik}^{\text{op}}$ denotes the properly transposed block.  At each step $k$ the required panel of $A$ is broadcast along the process row, the panel of $B$ along the process column, and a local `gemm` updates $C_{ij}$.
-
----
-
-### `pgeadd` — Distributed Matrix Addition
-
-Element-wise addition with optional transposition:
-
-$$C = \alpha \cdot \text{op}(A) + \beta \cdot \text{op}(B)$$
-
-When $op(A)=A^{T}$ (or $A^{\dagger}$) the routine communicates the transposed local blocks between the symmetric process pairs $(r,c)\leftrightarrow(c,r)$ before calling the local `geam` kernel.
-
----
-
-### `plapiv` — Apply Row Pivot Permutation
-
-Given a pivot vector `ipiv` produced by `pgetrf`, construct the permutation matrix $P$ and apply it to a matrix $A$:
-
-$$A \leftarrow PA$$
-
-For each row $i$ the routine looks up the target row $j = \text{ipiv}[i] - 1$ and performs a distributed row swap.  When the two rows reside on different processes the swap uses a temporary buffer and point-to-point communication.
-
----
-
-### `pswap` — Swap Rows or Columns
-
-Distributed swap of two vectors (rows or columns):
-
-$$\text{swap}(X, Y) : \quad X \leftrightarrow Y$$
-
-If the two vectors are stored on different processes the data is exchanged via `cclSend`/`cclRecv`; otherwise a local `swap` BLAS call is used.
-
----
-
-### `ppotrf` — Cholesky Factorization
-
-For a Hermitian positive-definite matrix $A$ (lower-triangular storage, $A = A^{\mathsf{H}}$), the Cholesky factorization is
-
-$$
-A = LL^{\dagger}$$
-$$
-
-
-Partition $A$ block-wise:
-
-$$A = \begin{pmatrix} A_{11} & A_{12} \\ A_{21} & A_{22} \end{pmatrix} = \begin{pmatrix} LL^{\mathsf{H}} & B \\ B^{\mathsf{H}} & C \end{pmatrix}$$
-
-Because $A$ is Hermitian, $A_{12} = A_{21}^{\mathsf{H}} \equiv B$ and $A_{22} \equiv C$.
-
-Introduce the block factors:
-
-$$\begin{pmatrix} L_{11} & 0 \\ L_{21} & L_{22} \end{pmatrix} \begin{pmatrix} L_{11}^{\mathsf{H}} & L_{21}^{\mathsf{H}} \\ 0 & L_{22}^{\mathsf{H}} \end{pmatrix} = \begin{pmatrix} L_{11}L_{11}^{\mathsf{H}} & L_{11}L_{21}^{\mathsf{H}} \\ L_{21}L_{11}^{\mathsf{H}} & L_{21}L_{21}^{\mathsf{H}}+L_{22}L_{22}^{\mathsf{H}} \end{pmatrix}$$
-
-Equating blocks gives the three update formulas used in the right-looking algorithm:
-
-1. **Diagonal panel**:
-   $$A_{11} = L_{11} L_{11}^{\mathsf{H}} \quad\Longrightarrow\quad L_{11} = \text{potrf}(A_{11})$$
-
-2. **Sub-diagonal panel**:
-   $$A_{21} = L_{21} L_{11}^{\mathsf{H}} \quad\Longrightarrow\quad L_{21} = A_{21} \, (L_{11}^{\mathsf{H}})^{-1}$$
-
-3. **Schur-complement update**:
-   $$A_{22} \leftarrow A_{22} - L_{21} L_{21}^{\mathsf{H}}$$
-
-The updated $A_{22}$ is again Hermitian positive-definite, so the process repeats recursively.
-
----
-
-### `ppotrs` — Solve Using Cholesky Factors
-
-With $A = LL^{\mathsf{H}}$ already computed, solve $AX = B$:
-
-$$LL^{\mathsf{H}} X = B$$
-
-Introduce $Y = L^{\mathsf{H}} X$:
-
-1. **Forward substitution** (lower triangular):
-   $$LY = B$$
-2. **Backward substitution** (upper triangular, conjugate transpose):
-   $$L^{\mathsf{H}} X = Y$$
-
-Both steps are performed by `ptrtrs` with appropriate `uplo` / `trans` arguments.
-
----
-
-### `pposv` — Positive-Definite System Solver (Cholesky Driver)
-
-Driver that composes Cholesky factorization and triangular solve:
-
-$$AX = B \xrightarrow{\text{ppotrf}} A = LL^{\mathsf{H}} \xrightarrow{\text{ptrtrs}(L)} Y \xrightarrow{\text{ptrtrs}(L^{\mathsf{H}})} X$$
-
----
-## Quick Example
+# LibDDLA — Distributed Dense Linear Algebra
+
+LibDDLA 0.0.5 is a C++17 template library for **distributed dense linear algebra**.
+It provides ScaLAPACK-style APIs with 2D block-cyclic data distribution over an
+MPI process grid, with a CPU (OpenBLAS/vendor BLAS), CUDA, or HIP backend
+selected at build time, including an optional dual CPU+GPU build that compiles
+both backends into one library and selects between them per handle at
+runtime. All functions live in the `ddla` namespace.
+
+## Key facts and caveats
+
+- **Backend selection.** Enable `DDLA_USE_CPU`, `DDLA_USE_CUDA`, or
+  `DDLA_USE_HIP` (at least one is required; `DDLA_USE_CUDA` and `DDLA_USE_HIP`
+  are mutually exclusive). Combining `DDLA_USE_CPU` with `DDLA_USE_CUDA` or
+  `DDLA_USE_HIP` builds a **dual** library containing both backends,
+  selectable per `DdlaHandle_t` at runtime.
+- **The CPU-only backend has a reduced surface.** It currently covers the
+  BLAS-1/2/3 wrappers (`gemm`, `scal`, `omatcopy`, `axpy`, `iamax`, `geru`) and
+  `pgemm`. The distributed factorization/solve routines (`pgetrf`, `pgesv`,
+  `ppotrf`, `pposv`, `ptran`, batched GEMM, etc.) are GPU-only and require
+  `DDLA_USE_CUDA` or `DDLA_USE_HIP` (alone or in a dual build).
+  `DDLA_USE_CCL` and `DDLA_USE_GPU_CPU_TUNNEL` are not supported with a
+  CPU-only build, since there is no GPU backend to communicate with.
+- **Supported scalar types** are `float`, `double`, `std::complex<float>`, and
+  `std::complex<double>`. The distributed Cholesky family (`ppotrf` /
+  `ppotrs` / `pposv`) is instantiated for all four types.
+- **Matrix storage is caller-owned.** LibDDLA routines operate on device pointers
+  supplied by the caller. Individual routines may allocate and release temporary
+  device workspaces internally.
+- **Integer dimensions (ScaLAPACK-compatible).** Global/local dimensions,
+  strides, and indices use `int`, matching ScaLAPACK's descriptor convention.
+  Matrices whose element count exceeds `INT_MAX` are not supported; extending
+  to `int64_t` global dimensions is a deliberate future work item and is not
+  part of the current API.
+- An **installable CMake package config** is provided: after
+  `cmake --install` (or `make install`), downstream builds can use
+  `find_package(LibDDLA)` and link `ddla::ddla`. The package config locates
+  MPI automatically and carries the include/library directories.
+
+## Prerequisites
+
+- **CMake** ≥ 3.13
+- **C++17** compiler
+- **MPI** (Open MPI or MPICH)
+- **CPU backend:** a BLAS library (e.g. OpenBLAS) providing the standard
+  Fortran `?gemm`/`?scal`/`?axpy`/`i?amax`/`?ger`/`?geru` symbols and
+  `cblas_?omatcopy`. Point CMake at it with
+  `-DDDLA_CPU_BLAS_LIBRARY=/path/to/libopenblas.so`, or leave it unset to fall
+  back to `find_package(BLAS REQUIRED)`.
+- **CUDA backend:** CUDA Toolkit with cuBLAS, cuSOLVER, cuRAND
+- **HIP backend:** ROCm / DTK with hipBLAS, hipSOLVER, hipRAND, and a CMake
+  version with first-class HIP language support
+- **CCL mode:** NCCL or RCCL for direct inter-GPU collectives (enable
+  `-DDDLA_USE_CCL=ON`)
+
+The current HIP link configuration includes RCCL in its backend library list,
+so RCCL must be available to HIP builds even when another communication mode is
+selected.
+
+The build system does **not** enforce a minimum CUDA/ROCm/NCCL version; use
+toolchains that are compatible with C++17, the GPU hardware, and the required
+math/solver libraries.
+
+## Quick build
+
+Architecture values (`CMAKE_CUDA_ARCHITECTURES`, `CMAKE_HIP_ARCHITECTURES`)
+are hardware-specific — use the SM number for your NVIDIA GPU (e.g. `"80"` for
+A100, `"70"` for V100) or the gfx target for your AMD GPU (e.g. `"gfx90a"` for
+MI200 series).
+
+### CPU-only
+
+```bash
+cmake -S . -B build-cpu                                 \
+  -DDDLA_USE_CPU=ON                                      \
+  -DDDLA_CPU_BLAS_LIBRARY=/path/to/libopenblas.so         \
+  -DBUILD_TESTS=ON                                        \
+  -DCMAKE_INSTALL_PREFIX="$PWD/install"
+cmake --build build-cpu -j
+cmake --build build-cpu --target install
+```
+
+### CUDA
+
+```bash
+cmake -S . -B build-cuda                               \
+  -DDDLA_USE_CUDA=ON                                   \
+  -DCMAKE_CUDA_ARCHITECTURES="80"                      \
+  -DBUILD_TESTS=ON                                     \
+  -DDDLA_USE_CCL=ON                                    \
+  -DCMAKE_INSTALL_PREFIX="$PWD/install"
+cmake --build build-cuda -j
+cmake --build build-cuda --target install
+```
+
+### HIP / ROCm
+
+```bash
+cmake -S . -B build-hip                                \
+  -DDDLA_USE_HIP=ON                                    \
+  -DCMAKE_HIP_ARCHITECTURES="gfx90a"                   \
+  -DBUILD_TESTS=ON                                     \
+  -DDDLA_USE_CCL=ON                                    \
+  -DCMAKE_INSTALL_PREFIX="$PWD/install"
+cmake --build build-hip -j
+cmake --build build-hip --target install
+```
+
+### Dual CPU + GPU
+
+Combine `DDLA_USE_CPU` with `DDLA_USE_CUDA` (or `DDLA_USE_HIP`) to build both
+backends into one library, selectable per `DdlaHandle_t` at runtime:
+
+```bash
+cmake -S . -B build-dual                                \
+  -DDDLA_USE_CPU=ON                                      \
+  -DDDLA_USE_CUDA=ON                                      \
+  -DDDLA_CPU_BLAS_LIBRARY=/path/to/libopenblas.so         \
+  -DCMAKE_CUDA_ARCHITECTURES="80"                         \
+  -DBUILD_TESTS=ON                                        \
+  -DDDLA_USE_CCL=ON                                       \
+  -DCMAKE_INSTALL_PREFIX="$PWD/install"
+cmake --build build-dual -j
+cmake --build build-dual --target install
+```
+
+The installed layout uses `include/ddla/*.h`, the platform library directory
+(normally `lib/libddla.so` on Linux), and a CMake package under
+`lib/cmake/LibDDLA`. Downstream builds can use:
+
+```cmake
+find_package(LibDDLA REQUIRED)
+target_link_libraries(myapp PRIVATE ddla::ddla)
+```
+
+Downstream translation units must still define the same backend macro(s) used
+to build LibDDLA (`DDLA_USE_CPU`, `DDLA_USE_CUDA`, and/or `DDLA_USE_HIP`,
+matching the build), because the backend selection is compile-time.
+
+## CMake options
+
+| Option                     | Default | Description |
+|---------------------------|---------|-------------|
+| `BUILD_TESTS`             | OFF     | Build test executables |
+| `DDLA_USE_CPU`            | OFF     | Build with the CPU backend (OpenBLAS/vendor BLAS); combine with `DDLA_USE_CUDA`/`DDLA_USE_HIP` for a dual CPU+GPU build |
+| `DDLA_USE_CUDA`           | OFF     | Build for NVIDIA CUDA GPUs |
+| `DDLA_USE_HIP`            | OFF     | Build for AMD HIP/ROCm GPUs |
+| `DDLA_CPU_BLAS_LIBRARY`   | (empty) | Path to a BLAS library for the CPU backend; falls back to `find_package(BLAS REQUIRED)` if unset |
+| `DDLA_USE_DEBUG`          | OFF     | Enable `DDLA_USE_DEBUG` preprocessor macro |
+| `DDLA_USE_CCL`            | OFF     | Use NCCL (CUDA) or RCCL (HIP) for device collectives (GPU backend required) |
+| `DDLA_USE_GPU_CPU_TUNNEL` | OFF     | Route communication through host staging buffers (D2H → MPI → H2D) (GPU backend required) |
+
+When both `DDLA_USE_CCL` and `DDLA_USE_GPU_CPU_TUNNEL` are enabled, the
+GPU-CPU tunnel path takes precedence for communication.  NCCL/RCCL libraries
+are still linked, and CMake emits a warning noting that CCL will not be used.
+
+## Communication modes
+
+The library selects one of three communication paths at compile time:
+
+| Path                             | Preprocessor                     | Behaviour |
+|----------------------------------|----------------------------------|-----------|
+| NCCL / RCCL                      | `DDLA_USE_CCL`                   | Direct device collectives on GPU-resident buffers |
+| GPU-CPU tunnel                   | `DDLA_USE_GPU_CPU_TUNNEL`        | D2H copy → MPI collective → H2D copy |
+| Synchronized MPI on device ptrs  | *(neither)*                      | `deviceStreamSynchronize` then GPU-aware MPI on device pointers |
+
+All ranks must execute collectives in the same order regardless of the chosen
+path.
+
+## Data model and lifecycle
+
+### Handle
 
 ```cpp
 #include <ddla/ddla.h>
-#include <complex>
+#include <ddla/ddla_connector.h>
 
-using namespace ddla;
-using T = std::complex<double>;
+ddla::DdlaHandle_t handle;          // opaque pointer (DdlaStream*)
+ddla::ddla_init(handle);            // create BLAS/Solver handles and device streams
+ddla::ddla_set(handle, MPI_COMM_WORLD, 'R');   // auto process grid (row-major)
+// or: ddla::ddla_set(handle, MPI_COMM_WORLD, nprows, npcols, 'R');
+```
+
+- `ddla_set` stores the process-grid dimensions and communicator on the handle.
+  The automatic form (`'R'`) derives a 2D grid from the number of MPI ranks.
+- **Destroy** with `ddla::ddla_destroy(handle)` when done.
+
+### Descriptor (`DdlaDesc`)
+
+A `DdlaDesc` captures the 2D block-cyclic layout of a distributed matrix:
+global rows/cols (`m`, `n`), block sizes (`mb`, `nb`), process-grid coordinates
+(`nprows`, `npcols`, `myprow`, `mypcol`), source-process offsets (`irsrc`,
+`icsrc`), and local dimensions (`m_loc`, `n_loc`, `lld`).
+
+**Important:** most factorization and solve routines require square blocks
+(`mb == nb`).  Use `init_square_blk` to enforce this automatically.
+
+```cpp
+int m = 4096, n = 64;
+ddla::DdlaDesc desc(handle);
+desc.init_square_blk(m, n, 0, 0);   // derives one square block size from the grid
+```
+
+Free index-mapping helpers are in `<ddla/ddla_desc.h>`:
+`indxg2p`, `indxg2l`, `indxl2g`, `num_loc`.  They match the ScaLAPACK
+convention exactly.
+
+### Local device matrices
+
+Each MPI rank owns a contiguous local submatrix of size `m_loc × n_loc` stored
+in GPU device memory.  The caller allocates and frees this memory.
+
+```cpp
+#include <ddla/ddla.h>
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
 
-    DdlaHandle_t handle;
-    ddla_init(handle);
-    ddla_set(handle, MPI_COMM_WORLD, 'R');
+    ddla::DdlaHandle_t handle;
+    ddla::ddla_init(handle);
+    ddla::ddla_set(handle, MPI_COMM_WORLD, 'R');
 
-    int      n = 4096, nrhs = 64;
-    DdlaDesc descA(handle), descB(handle);
+    int n = 4096, nrhs = 64;
+    ddla::DdlaDesc descA(handle), descB(handle);
     descA.init_square_blk(n, n, 0, 0);
     descB.init_square_blk(n, nrhs, 0, 0);
 
-    T *d_A, *d_B;
-    deviceMalloc(&d_A, descA.m_loc() * descA.n_loc() * sizeof(T));
-    deviceMalloc(&d_B, descB.m_loc() * descB.n_loc() * sizeof(T));
+    double *d_A, *d_B;
+    ddla::deviceMalloc(&d_A, descA.m_loc() * descA.n_loc() * sizeof(double));
+    ddla::deviceMalloc(&d_B, descB.m_loc() * descB.n_loc() * sizeof(double));
 
-    // ... fill A and B ...
+    // ... fill matrices, call ddla routines ...
 
-    pgesv(n, nrhs, d_A, descA, d_B, descB);
-
-    deviceFree(d_A);
-    deviceFree(d_B);
-    ddla_destroy(handle);
+    ddla::deviceFree(d_A);
+    ddla::deviceFree(d_B);
+    ddla::ddla_destroy(handle);
     MPI_Finalize();
     return 0;
 }
 ```
 
----
+The `ddla::deviceMalloc` / `ddla::deviceFree` helpers declared in
+`<ddla/ddla_connector.h>` are convenience wrappers over `cudaMalloc` /
+`hipMalloc` that safely handle zero-byte requests.
 
-## Build Requirements
+## API overview
 
-| Dependency | Version |
-|------------|---------|
-| C++ compiler | C++17 or later |
-| MPI | OpenMPI / MPICH |
-| CUDA Toolkit | >= 11.0 (CUDA) |
-| ROCm | >= 5.0 (HIP) |
-| NCCL / RCCL | recent stable release |
-| CMake | >= 3.18 |
+### Handle and descriptor
 
----
+| Symbol | Description |
+|--------|-------------|
+| `DdlaHandle_t` | Opaque handle type (`DdlaStream*`) |
+| `ddla_init` | Allocate handle (streams, BLAS/Solver handles, optional CCL comms) |
+| `ddla_set` | Configure process grid (auto `'R'` or explicit `nprows`×`npcols`) |
+| `ddla_destroy` | Tear down handle |
+| `ddla_get_stream` | Return the default device stream from a handle |
+| `DdlaDesc` | 2D block-cyclic matrix descriptor |
+| `DdlaDesc::init_square_blk` | Initialize `mb = nb` from global row/col counts |
+| `DdlaDesc::init` | Initialize with explicit block sizes |
+| `indxg2p` / `indxg2l` / `indxl2g` / `num_loc` | Free index-mapping functions |
 
-## Building
+### Distributed BLAS and data movement
+
+| Function | Description |
+|----------|-------------|
+| `pgemm` | `C = α·op(A)·op(B) + β·C` (SUMMA algorithm) |
+| `pgeadd` | `C = α·op(A) + β·op(B)` |
+| `pdam` | Add scalar to diagonal of distributed square matrix |
+| `ptran` | Out-of-place distributed transpose (with optional conjugate) |
+| `transport_block` | Extract/transpose a contiguous block from a distributed matrix into a local buffer |
+
+### LU factorization, solve, and drivers
+
+| Function | Description |
+|----------|-------------|
+| `pgetf2` | Unblocked panel LU (inner kernel, host pivot array) |
+| `pgetf2_panel` | Alternative panel LU (rank-revealing variant) |
+| `pgetrf` | LU with partial (row) pivoting |
+| `pgetrf_bpiv` | Block LU with partial pivoting per block row (device pivot array) |
+| `pgetrf_nopiv` | Multi-process LU without pivoting |
+| `getrf_nopiv` | Local (single-process) LU without pivoting |
+| `pgetrs` | Solve using pivoted LU factors: `op(A)·X = B` (side='L') or `X·op(A) = B` (side='R'), trans='N'/'T'/'C' |
+| `pgetrs_nopiv` | Solve using no-pivot LU factors (same side/trans options) |
+| `pgesv` | Driver: LU + solve with pivoting (side, trans) |
+| `pgesv_nopiv` | Driver: LU + solve without pivoting (side, trans) |
+| `ptrtrs` | Distributed triangular solve (side × uplo × trans × diag) |
+| `plapiv` | Apply pivot permutation to rows or columns, forward or backward |
+| `pswap` | Swap rows or columns between two distributed matrices |
+
+### Cholesky
+
+| Function | Description |
+|----------|-------------|
+| `ppotrf` | Standard Cholesky factorization (complex-only) |
+| `ppotrs` | Solve using Cholesky factor (side='L'/'R'; trans='N'/'C') |
+| `pposv` | Driver: Cholesky + solve (side='L'/'R'; trans='N'/'C') |
+| `potrf_bottom_right` | Local bottom-right Cholesky (all four scalar types) |
+| `ppotrf_bottom_right` | Distributed bottom-right Cholesky (all four scalar types) |
+
+**Solve semantics.** For `side='L'` the right-hand side B is `n × nrhs` and
+the system is `op(A)·X = B`; for `side='R'` B is `nrhs × n` and the system is
+`X·op(A) = B`.  The LU-family solves (`pgetrs`, `pgetrs_nopiv`, `pgesv`,
+`pgesv_nopiv`) accept `trans` = 'N', 'T' or 'C'.  The Cholesky solves
+(`ppotrs`, `pposv`) accept `trans` = 'N' or 'C', which are equivalent for a
+Hermitian matrix ('T' is not supported).  `plapiv` applies the pivot
+permutation to either rows (`rowcol`='R') or columns (`rowcol`='C'), in
+forward (`direc`='F') or backward (`direc`='B') order.  `ppotrs` applies the
+head-correction relocation permutation to B itself (rows for side='L',
+columns for side='R') when given the same `location` passed to `ppotrf`.
+
+### Auxiliary and advanced
+
+| Function | Description |
+|----------|-------------|
+| `gemmVbatched` | Batch of GEMMs with variable dimensions (device-resident dim arrays) |
+| `gemmVbatched2s` | Two-stage variable-batch GEMM with reusable temporary |
+| `random_generate` | Fill device buffer with uniform random values |
+
+`random_generate<T>` is declared in `<ddla/ddla_connector.h>` as a template,
+implemented in `src/ddla_utils.cpp`, and explicitly instantiated for `float`,
+`double`, `std::complex<float>`, and `std::complex<double>`.
+
+## Testing
+
+Build with `-DBUILD_TESTS=ON`.  Test executables are MPI programs and must be
+launched with `mpirun`.  The total number of ranks must equal the product of
+process-grid rows and columns (`nprows × npcols`), which defaults
+automatically.  You can override the grid with `--grid`:
 
 ```bash
-mkdir build && cd build
+# Run a single test on 4 ranks (auto grid)
+mpirun -np 4 build-cuda/tests/test_random_generate
 
-# CUDA backend
-cmake .. -DDDLA_USE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="80"
-
-# HIP/ROCm backend
-cmake .. -DDDLA_USE_HIP=ON -DCMAKE_HIP_ARCHITECTURES="gfx90a"
-
-make -j
+# Explicit 2×2 grid for a test that supports --grid
+mpirun -np 4 build-cuda/tests/test_api_grid_ptrtrs --grid 2x2
 ```
 
-> **Note:** `install_scripts/install_cuda.sh` currently sets `CMAKE_CUDA_ARCHITECTURES=80` by default (A100 / SM80). If you run on V100 (SM70) or other GPUs, make sure the architecture matches the target device, e.g.:
->
-> ```bash
-> cmake .. -DDDLA_USE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="70"
-> ```
->
-> Mismatched architecture (e.g. building SM80 and running on V100) can cause kernel launch failures or silent numerical errors such as `log-determinant mismatch` in the tests.
+The files `tests/test_cuda.sh` and `tests/test_hip.sh` are cluster-specific
+Slurm batch scripts.  They load modules, build, and run the test suite on
+particular machines; adapt their module/partition settings to your own cluster.
 
----
-
-## Architecture
+## Repository layout
 
 ```
 LibDDLA/
-├── include/ddla/           # Public headers
-│   ├── ddla.h              # Main API: all function declarations
-│   ├── ddla_desc.h         # DdlaDesc: distributed matrix descriptor
-│   ├── ddla_stream.h       # DdlaStream: device streams, handles, NCCL comms
-│   ├── ddla_connector.h    # CUDA/HIP type aliases and macros
-│   ├── ddla_comm.h         # Communication primitives (bcast, send/recv)
-│   ├── ddla_handle_t.h     # Handle type and init / destroy helpers
-│   ├── transport_block.h   # Block extraction with transpose support
-│   ├── gemm.h, trsm.h,     # BLAS wrapper functions (type-overloaded)
-│   │   scal.h, axpy.h,
-│   │   swap.h, geru.h,
-│   │   iamax.h, geam.h,
-│   │   herk.h, gemmBatched.h
-│   └── potrf.h             # GPU-solver Potrf wrapper
-├── src/                    # Implementation files
-│   ├── pgetrf.cpp          # LU factorization
-│   ├── pgetrs.cpp          # LU solve
-│   ├── pgesv.cpp           # LU driver
-│   ├── ptrtrs.cpp          # Triangular solve
-│   ├── pgemm.cpp           # Matrix multiplication
-│   ├── pgeadd.cpp          # Matrix addition
-│   ├── plapiv.cpp          # Pivot application
-│   ├── pswap.cpp           # Row/column swap
-│   ├── ppotrf.cpp          # Cholesky factorization
-│   ├── ppotrs.cpp          # Cholesky solve
-│   ├── pposv.cpp           # Cholesky driver
-│   ├── pgetf2.cpp          # Unblocked LU panel (inner kernel)
-│   ├── pgetf2_panel.cpp    # Alternative panel factorization
-│   ├── transport_block.cpp # Block extraction utilities
-│   ├── ddla_stream.cpp     # DdlaStream init / cleanup
-│   ├── ddla_handle_t.cpp   # Handle init / set / destroy
-│   └── ddla_desc.cpp       # DdlaDesc construction and indexing
-├── tests/                  # Integration tests
-├── cmake/                  # CMake helper modules
-└── CMakeLists.txt          # Top-level build
+├── include/ddla/         Public headers
+│   ├── ddla.h            Main API declarations (all Doxygen comments)
+│   ├── ddla_handle_t.h   Handle type and init/set/destroy
+│   ├── ddla_desc.h       DdlaDesc descriptor and index mapping helpers
+│   ├── ddla_comm.h       Communication primitives (bcast, send/recv, allreduce)
+│   ├── ddla_connector.h  CUDA/HIP type aliases, macros, CHECK utilities, malloc wrappers, random_generate
+│   ├── ddla_stream.h     DdlaStream (internal)
+│   ├── transport_block.h Distributed-to-local block extraction
+│   ├── ptran.h           Distributed matrix transpose
+│   ├── gemmVbatched.h    Variable-size batched GEMM
+│   └── Backend wrappers  gemm.h, trsm.h, scal.h, axpy.h, swap.h, geru.h,
+│                         iamax.h, geam.h, herk.h, syrk.h, trmm.h,
+│                         gemmBatched.h, getrf.h, potrf.h, laswp.h
+├── src/                  Implementation (one routine per .cpp)
+├── tests/                Integration tests (MPI executables)
+├── benchmarks/           Benchmark data and supporting artifacts
+├── install_scripts/      Backend-specific build/install scripts
+├── cmake/                CMake helper modules
+├── CMakeLists.txt        Top-level build
+└── LICENSE               LGPL-3.0 license text
 ```
 
----
+## Version
 
-## Data Distribution
-
-Matrices are distributed over a 2D process grid (`nprows` × `npcols`) in
-**2D block-cyclic** fashion, identical to ScaLAPACK. Each process holds a
-contiguous local submatrix of dimensions `m_loc × n_loc` stored in GPU device
-memory.
-
-The `DdlaDesc` descriptor tracks:
-- Global dimensions: `m`, `n`
-- Block sizes: `mb`, `nb`
-- Process-grid coordinates: `myprow`, `mypcol`, `nprows`, `npcols`
-- Source process for row/col distribution: `irsrc`, `icsrc`
-- Local leading dimension: `lld`
-
-Index mapping helpers (`indxg2p`, `indxg2l`, `indxl2g`, `num_loc`) are
-provided in `ddla_desc.h`.
-
----
-
-## Communication
-
-Inter-process GPU data movement uses **NCCL** (NVIDIA) or **RCCL** (AMD):
-
-- **Row communicator** (`nccl_row_comm`): broadcast / reduce along process rows
-- **Column communicator** (`nccl_col_comm`): broadcast / reduce along process columns
-
-An optional CPU-tunnel fallback (`DDLA_USE_GPU_CPU_TUNNEL`) routes data through
-host memory when NCCL is unavailable, using MPI for inter-node communication.
-
-
-## Experimental Routines
-
-### Block LU with Partial Pivoting (Recursive Panel Factorization)
-
-This section documents the block-wise derivation for a recursive panel LU factorization with partial row pivoting, where the diagonal panel is factored by a single-process GPU solver (cuSOLVER / rocSOLVER).
-
-Given a matrix $M$ partitioned into $2 \times 2$ blocks:
-
-$$M = \begin{pmatrix} A & B \\ C & D \end{pmatrix}$$
-
-We seek permutations $P_1, P_2$ and block triangular factors $L, U$ such that $PM = LU$.  The derivation proceeds recursively.
-
-**Step 1 — Pivot and factor the first panel.**
-
-Apply a row permutation $P_1$ to the first block-row and factor the panel:
-
-$$\begin{pmatrix} P_1^{-1} & 0 \\ 0 & I \end{pmatrix} \begin{pmatrix} A & B \\ C & D \end{pmatrix} = \begin{pmatrix} P_1^{-1} & 0 \\ 0 & I \end{pmatrix} \begin{pmatrix} P_1 A & P_1 B \\ C & D \end{pmatrix} = \begin{pmatrix} P_1^{-1} & 0 \\ 0 & I \end{pmatrix} \begin{pmatrix} L_1 U_1 & P_1 B \\ C & D \end{pmatrix}$$
-
-**Step 2 — Introduce the first block column of $L$ and first block row of $U$.**
-
-Rewrite the permuted matrix as a product of a unit block-lower triangular matrix and a block-upper triangular matrix:
-
-$$\begin{pmatrix} P_1^{-1} & 0 \\ 0 & I \end{pmatrix} \begin{pmatrix} L_1 & 0 \\ C U_1^{-1} & I \end{pmatrix} \begin{pmatrix} U_1 & L_1^{-1} P_1 B \\ 0 & D - C U_1^{-1} L_1^{-1} P_1 B \end{pmatrix}$$
-
-Here:
-- $L_1$ is unit lower triangular (from the panel LU).
-- $U_1$ is upper triangular (from the panel LU).
-- The Schur complement of the trailing block is $S = D - C U_1^{-1} L_1^{-1} P_1 B = D - (C U_1^{-1})(L_1^{-1} P_1 B)$.
-
-**Step 3 — Recurse on the Schur complement.**
-
-Factor the trailing block recursively with its own pivot $P_2$:
-
-$$S = P_2^{-1} L_2 U_2$$
-
-Absorb $P_2$ into the global permutation and write the final factorization:
-
-$$\begin{pmatrix} P_1^{-1} & 0 \\ 0 & I \end{pmatrix} \begin{pmatrix} L_1 & 0 \\ C U_1^{-1} & I \end{pmatrix}\begin{pmatrix} I & 0 \\ 0 & P_2^{-1} \end{pmatrix} \begin{pmatrix} I & 0 \\ 0 & L_2\end{pmatrix}\begin{pmatrix} U_1 & L_1^{-1} P_1 B \\ 0 & U_2 \end{pmatrix}$$
-
-**Summary of the right-looking block algorithm (one step).**
-
-For a distributed matrix with block size $nb$, a single step updates the trailing matrix as follows:
-
-1. **Panel LU** (local, single GPU via cuSOLVER/rocSOLVER `getrf`):  
-   $$P_1 A = L_1 U_1$$
-
-2. **Apply pivot to the right panel** (distributed row swaps):  
-   $$B \leftarrow P_1 B$$
-
-3. **Compute the block row of $U$** (triangular solve, `trsm`):  
-   $$U_{12} = L_1^{-1} B$$
-
-4. **Compute the block column of $L$** (triangular solve, `trsm`):  
-   $$L_{21} = C \, U_1^{-1}$$
-
-5. **Schur-complement update** (matrix multiply, `gemm`):  
-   $$D \leftarrow D - L_{21} U_{12}$$
-
-The updated $D$ becomes the new trailing matrix for the next recursive step.
-
----
----
-
-## Benchmarks
-
-The following table shows single-GPU `zgetrf_nopiv` timings on an NVIDIA V100
-(SM70) using `v100g32fat`.  The test matrix is a random complex matrix with a
-diagonal shift to keep it non-singular.  Timings include device synchronization.
-
-| n     | LibDDLA `getrf_nopiv` (s) | MAGMA `zgetrf_nopiv_gpu` (s) | cuSOLVER `zgetrf` (s) | diff(L/R) | diff(M/R) | diff(L/M) |
-|------:|--------------------------:|-----------------------------:|----------------------:|----------:|----------:|----------:|
-| 100   | 7.18e-03                  | 2.42e-01                     | 1.68e-03              | 1.42e-14  | 0.00e+00  | 1.42e-14  |
-| 500   | 1.88e-03                  | 4.89e-03                     | 5.93e-03              | 5.68e-14  | 0.00e+00  | 5.68e-14  |
-| 1000  | 4.39e-03                  | 1.31e-02                     | 8.77e-03              | 0.00e+00  | 1.14e-13  | 1.14e-13  |
-| 5000  | 9.60e-02                  | 4.24e-01                     | 9.92e-02              | 4.55e-13  | 0.00e+00  | 4.55e-13  |
-| 10000 | 6.02e-01                  | 2.32e+00                     | 5.12e-01              | 1.82e-12  | 1.82e-12  | 0.00e+00  |
-
-Notes:
-- LibDDLA and cuSOLVER stay on the GPU for the whole factorization.
-- MAGMA's `magma_zgetrf_nopiv_gpu` is a **hybrid** routine: it copies each
-  panel to the CPU, factors it with OpenBLAS, and copies it back.  This
-  explains the higher run time, especially for small matrices where the
-  CPU-panel overhead dominates.
-- The `log|det|` values agree to floating-point round-off in all cases.
-
-### Multi-Process No-Pivot LU Benchmarks
-
-The following tables summarize 4-MPI-rank / 4-GPU runs on a single HPC3 node,
-using complex double precision (`zgetrf_nopiv` / `zgesv_nopiv`) and block size
-$nb = 128$.
-
-#### Factorization comparison: `pgetrf` vs `pgetrf_bpiv` vs `pgetrf_nopiv`
-
-| n     | `pgetrf` (s) | `pgetrf_bpiv` (s) | `pgetrf_nopiv` (s) | ln_det                 | `|ln_det_nopiv - ln_det_pgetrf|` | `|ln_det_nopiv - ln_det_bpiv|` |
-|------:|-------------:|------------------:|-------------------:|:-----------------------|---------------------------------:|-------------------------------:|
-| 500   | 6.44e-02     | 7.02e-03          | 3.23e-03           | 346.270152+i-0.745968  | 0.00e+00                         | 0.00e+00                       |
-| 1000  | 9.82e-02     | 6.27e-03          | 5.76e-03           | 692.104913+i-1.882746  | 2.22e-16                         | 2.22e-16                       |
-| 5000  | 5.39e-01     | 5.49e-02          | 5.15e-02           | 3456.164522+i-11.786721| 9.09e-13                         | 0.00e+00                       |
-| 10000 | 1.16e+00     | 1.88e-01          | 1.80e-01           | 6910.034013+i-24.275085| 9.13e-13                         | 9.13e-13                       |
-| 15000 | 1.96e+00     | 4.86e-01          | 4.80e-01           | 10363.707884+i-36.828523| 1.82e-12                        | 0.00e+00                       |
-| 20000 | 3.05e+00     | 1.03e+00          | 1.02e+00           | 13817.180801+i-49.299152| 1.82e-12                        | 3.65e-12                       |
-
-`pgetrf_nopiv` matches the `log|det|` values of both pivoting variants to
-floating-point round-off.  Because the block LU algorithm does not perform any
-row interchanges, the panel factorization uses the local single-GPU
-`getrf_nopiv` kernel with a large block size, and the dominant cost is the
-Schur-complement `gemm` update.
-
-#### Driver solve accuracy: `pgesv_nopiv` solving $AX = I$
-
-The test generates a random diagonally-shifted matrix $A$, solves $AX = I$ with
-`pgesv_nopiv`, multiplies $A \cdot X$ locally with `pgemm`, and checks the
-maximum entrywise deviation from the identity matrix.  The global max error is
-obtained via `MPI_Reduce(MPI_MAX, ...)`.
-
-| n     | `pgesv_nopiv` (s) | verification `pgemm` (s) | global max error |
-|------:|------------------:|-------------------------:|:----------------:|
-| 500   | 3.19e-02          | 6.30e-04                 | 2.11e-15         |
-| 1000  | 1.03e-02          | 1.65e-03                 | 3.55e-15         |
-| 5000  | 1.33e-01          | 5.98e-02                 | 3.77e-15         |
-| 10000 | 5.95e-01          | 3.56e-01                 | 4.22e-15         |
-
-The global max error stays at the level of machine epsilon for complex double
-precision, confirming that the no-pivot LU factors can reconstruct the inverse
-with full numerical accuracy for this class of test matrices.
+**0.0.5** — defined in `src/version.h`.  The shared library SONAME tracks the
+major version.
 
 ## License
 
-See [LICENSE](./LICENSE).
+LGPL v3.  See [LICENSE](./LICENSE).

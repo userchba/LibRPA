@@ -11,7 +11,7 @@
 
 #include <ddla/ddla.h>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
 
 using namespace ddla;
 
@@ -217,20 +217,20 @@ bool run_success_case(char uplo, int n, const ddla::DdlaHandle_t& handle)
     const size_t bytes = input.size() * sizeof(T);
 
     T* d_A = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(
+    RUNTIME_CHECK(runtimeMallocAsync(
         reinterpret_cast<void**>(&d_A), bytes, handle->stream));
-    DEVICE_CHECK(deviceMemcpyAsync(
-        d_A, input.data(), bytes, deviceMemcpyHostToDevice, handle->stream));
+    RUNTIME_CHECK(runtimeMemcpyAsync(
+        d_A, input.data(), bytes, runtimeMemcpyHostToDevice, handle->stream));
 
     int info = -1;
     ddla::potrf_bottom_right(uplo, n, d_A, lda, info, handle);
-    DEVICE_CHECK(deviceGetLastError());
+    RUNTIME_CHECK(runtimeGetLastError());
 
     std::vector<T> actual(input.size());
-    DEVICE_CHECK(deviceMemcpyAsync(
-        actual.data(), d_A, bytes, deviceMemcpyDeviceToHost, handle->stream));
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_A, handle->stream));
+    RUNTIME_CHECK(runtimeMemcpyAsync(
+        actual.data(), d_A, bytes, runtimeMemcpyDeviceToHost, handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_A, handle->stream));
 
     const double error = factor_error(uplo, actual, expected, n, lda);
     const double triangle_error =
@@ -281,16 +281,16 @@ bool run_failure_case(
     const size_t bytes = input.size() * sizeof(T);
 
     T* d_A = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(
+    RUNTIME_CHECK(runtimeMallocAsync(
         reinterpret_cast<void**>(&d_A), bytes, handle->stream));
-    DEVICE_CHECK(deviceMemcpyAsync(
-        d_A, input.data(), bytes, deviceMemcpyHostToDevice, handle->stream));
+    RUNTIME_CHECK(runtimeMemcpyAsync(
+        d_A, input.data(), bytes, runtimeMemcpyHostToDevice, handle->stream));
 
     int info = -1;
     ddla::potrf_bottom_right(uplo, n, d_A, lda, info, handle);
-    DEVICE_CHECK(deviceGetLastError());
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_A, handle->stream));
+    RUNTIME_CHECK(runtimeGetLastError());
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_A, handle->stream));
 
     const int expected_info = failed_pivot + 1;
     const bool passed = info == expected_info;
@@ -342,7 +342,7 @@ int main(int argc, char** argv)
     passed = run_type<std::complex<float>>(handle) && passed;
     passed = run_type<std::complex<double>>(handle) && passed;
 
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
     ddla::ddla_destroy(handle);
     MPI_Finalize();
     return passed ? 0 : 1;

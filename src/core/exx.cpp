@@ -1186,11 +1186,11 @@ void Exx::build_KS_blacs(const std::map<int, std::map<int, std::map<int, Complex
         size_hexx_nao = static_cast<size_t>(desc_nao_nao_opt.m_loc()) * desc_nao_nao_opt.n_loc();
         size_temp = static_cast<size_t>(desc_nband_nao_opt.m_loc()) * desc_nband_nao_opt.n_loc();
         size_hexx_nband = static_cast<size_t>(desc_nband_nband_opt.m_loc()) * desc_nband_nband_opt.n_loc();
-        DEVICE_CHECK(deviceMallocAsync((void**)&d_wfc_bra, std::max<size_t>(size_wfc, 1) * sizeof(std::complex<double>), rotation_blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceMallocAsync((void**)&d_wfc_ket, std::max<size_t>(size_wfc, 1) * sizeof(std::complex<double>), rotation_blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceMallocAsync((void**)&d_hexx_nao, std::max<size_t>(size_hexx_nao, 1) * sizeof(std::complex<double>), rotation_blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceMallocAsync((void**)&d_temp, std::max<size_t>(size_temp, 1) * sizeof(std::complex<double>), rotation_blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceMallocAsync((void**)&d_hexx_nband, std::max<size_t>(size_hexx_nband, 1) * sizeof(std::complex<double>), rotation_blacs_h.ddla_handle->stream));
+        RUNTIME_CHECK(runtimeMallocAsync((void**)&d_wfc_bra, std::max<size_t>(size_wfc, 1) * sizeof(std::complex<double>), DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeMallocAsync((void**)&d_wfc_ket, std::max<size_t>(size_wfc, 1) * sizeof(std::complex<double>), DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeMallocAsync((void**)&d_hexx_nao, std::max<size_t>(size_hexx_nao, 1) * sizeof(std::complex<double>), DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeMallocAsync((void**)&d_temp, std::max<size_t>(size_temp, 1) * sizeof(std::complex<double>), DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeMallocAsync((void**)&d_hexx_nband, std::max<size_t>(size_hexx_nband, 1) * sizeof(std::complex<double>), DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
     }
 #endif
 
@@ -1574,14 +1574,14 @@ void Exx::build_KS_blacs(const std::map<int, std::map<int, std::map<int, Complex
                         {
                             if (size_wfc > 0)
                             {
-                                DEVICE_CHECK(deviceMemcpyAsync(d_wfc_bra, wfc_bra_ptr, size_wfc * sizeof(std::complex<double>),
-                                                               deviceMemcpyHostToDevice, rotation_blacs_h.ddla_handle->stream));
-                                DEVICE_CHECK(deviceMemcpyAsync(d_wfc_ket, wfc_ket_ptr, size_wfc * sizeof(std::complex<double>),
-                                                               deviceMemcpyHostToDevice, rotation_blacs_h.ddla_handle->stream));
+                                RUNTIME_CHECK(runtimeMemcpyAsync(d_wfc_bra, wfc_bra_ptr, size_wfc * sizeof(std::complex<double>),
+                                                               runtimeMemcpyHostToDevice, DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
+                                RUNTIME_CHECK(runtimeMemcpyAsync(d_wfc_ket, wfc_ket_ptr, size_wfc * sizeof(std::complex<double>),
+                                                               runtimeMemcpyHostToDevice, DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
                             }
                             if (size_hexx_nao > 0)
-                                DEVICE_CHECK(deviceMemcpyAsync(d_hexx_nao, Hexx_nao_nao_opt.ptr(), size_hexx_nao * sizeof(std::complex<double>),
-                                                               deviceMemcpyHostToDevice, rotation_blacs_h.ddla_handle->stream));
+                                RUNTIME_CHECK(runtimeMemcpyAsync(d_hexx_nao, Hexx_nao_nao_opt.ptr(), size_hexx_nao * sizeof(std::complex<double>),
+                                                               runtimeMemcpyHostToDevice, DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
                             LaConnector::pgemm(
                                 'C', 'N', n_bands, n_aos, n_aos, std::complex<double>{1.0, 0.0},
                                 d_wfc_bra, 1, 1, desc_wfc_device,
@@ -1595,10 +1595,10 @@ void Exx::build_KS_blacs(const std::map<int, std::map<int, std::map<int, Complex
                                 std::complex<double>{0.0, 0.0},
                                 d_hexx_nband, 1, 1, desc_nband_nband_opt);
                             if (size_hexx_nband > 0)
-                                DEVICE_CHECK(deviceMemcpyAsync(Hexx_nband_nband_opt.ptr(), d_hexx_nband,
+                                RUNTIME_CHECK(runtimeMemcpyAsync(Hexx_nband_nband_opt.ptr(), d_hexx_nband,
                                                                size_hexx_nband * sizeof(std::complex<double>),
-                                                               deviceMemcpyDeviceToHost, rotation_blacs_h.ddla_handle->stream));
-                            DEVICE_CHECK(deviceStreamSynchronize(rotation_blacs_h.ddla_handle->stream));
+                                                               runtimeMemcpyDeviceToHost, DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
+                            RUNTIME_CHECK(runtimeStreamSynchronize(DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
                         }
                         else
 #endif
@@ -1805,11 +1805,11 @@ void Exx::build_KS_blacs(const std::map<int, std::map<int, std::map<int, Complex
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
     if (use_gpu_replace_scalapack && use_klocal_rotation)
     {
-        DEVICE_CHECK(deviceFreeAsync(d_wfc_bra, rotation_blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceFreeAsync(d_wfc_ket, rotation_blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceFreeAsync(d_hexx_nao, rotation_blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceFreeAsync(d_temp, rotation_blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceFreeAsync(d_hexx_nband, rotation_blacs_h.ddla_handle->stream));
+        RUNTIME_CHECK(runtimeFreeAsync(d_wfc_bra, DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeFreeAsync(d_wfc_ket, DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeFreeAsync(d_hexx_nao, DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeFreeAsync(d_temp, DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeFreeAsync(d_hexx_nband, DeviceConnector::stream(rotation_blacs_h.ddla_handle)));
     }
 #endif
     global::ofs_myid << "Done Exx::build_KS_blacs" << std::endl;

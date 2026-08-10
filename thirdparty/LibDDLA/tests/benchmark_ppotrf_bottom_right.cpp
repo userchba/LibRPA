@@ -13,7 +13,7 @@
 
 #include <ddla/ddla.h>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
 
 namespace {
 
@@ -368,10 +368,10 @@ void reset_matrix(const ddla::DdlaHandle_t& handle, Complex* d_work,
                   const Complex* d_reference, std::size_t count)
 {
     if(count > 0){
-        DEVICE_CHECK(deviceMemcpyAsync(d_work, d_reference, count * sizeof(Complex),
-                                       deviceMemcpyDeviceToDevice, handle->stream));
+        RUNTIME_CHECK(runtimeMemcpyAsync(d_work, d_reference, count * sizeof(Complex),
+                                       runtimeMemcpyDeviceToDevice, handle->stream));
     }
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
 }
 
 double run_once(Algorithm algorithm, int n, Complex* d_work,
@@ -391,7 +391,7 @@ double run_once(Algorithm algorithm, int n, Complex* d_work,
     }else{
         ddla::ppotrf_bottom_right(options.uplo, n, d_work, desc, info);
     }
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
     const double local_elapsed = MPI_Wtime() - start;
 
     const int local_failure = (info != 0 || sign_correction) ? 1 : 0;
@@ -448,19 +448,19 @@ void benchmark_size(int n, const Options& options,
     const std::size_t allocation_count = std::max<std::size_t>(count, 1);
     Complex* d_reference = nullptr;
     Complex* d_work = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(reinterpret_cast<void**>(&d_reference),
+    RUNTIME_CHECK(runtimeMallocAsync(reinterpret_cast<void**>(&d_reference),
                                    allocation_count * sizeof(Complex), handle->stream));
-    DEVICE_CHECK(deviceMallocAsync(reinterpret_cast<void**>(&d_work),
+    RUNTIME_CHECK(runtimeMallocAsync(reinterpret_cast<void**>(&d_work),
                                    allocation_count * sizeof(Complex), handle->stream));
 
     {
         const std::vector<Complex> h_reference = make_local_hpd(desc);
         if(count > 0){
-            DEVICE_CHECK(deviceMemcpyAsync(d_reference, h_reference.data(),
+            RUNTIME_CHECK(runtimeMemcpyAsync(d_reference, h_reference.data(),
                                            count * sizeof(Complex),
-                                           deviceMemcpyHostToDevice, handle->stream));
+                                           runtimeMemcpyHostToDevice, handle->stream));
         }
-        DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+        RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
     }
 
     for(int iteration = 0; iteration < options.warmup; ++iteration){
@@ -529,9 +529,9 @@ void benchmark_size(int n, const Options& options,
                   << std::endl;
     }
 
-    DEVICE_CHECK(deviceFreeAsync(d_reference, handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_work, handle->stream));
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_reference, handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_work, handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
 }
 
 } // namespace

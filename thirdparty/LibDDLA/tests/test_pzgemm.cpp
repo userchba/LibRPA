@@ -9,7 +9,7 @@
 #include <ddla/ddla.h>
 #include <ddla/ddla_connector.h>
 #include <random>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
 
 using namespace ddla;
 
@@ -54,24 +54,24 @@ void check_pgemm(char transa, char transb,
     std::complex<double>* d_A;
     std::complex<double>* d_B;
     std::complex<double>* d_C;
-    DEVICE_CHECK(deviceMalloc(&d_A, sizeof(std::complex<double>) * h_A.size()));
-    DEVICE_CHECK(deviceMalloc(&d_B, sizeof(std::complex<double>) * h_B.size()));
-    DEVICE_CHECK(deviceMalloc(&d_C, sizeof(std::complex<double>) * h_C.size()));
+    RUNTIME_CHECK(runtimeMalloc(&d_A, sizeof(std::complex<double>) * h_A.size()));
+    RUNTIME_CHECK(runtimeMalloc(&d_B, sizeof(std::complex<double>) * h_B.size()));
+    RUNTIME_CHECK(runtimeMalloc(&d_C, sizeof(std::complex<double>) * h_C.size()));
 
-    DEVICE_CHECK(deviceMemcpy(d_A, h_A.data(), sizeof(std::complex<double>) * h_A.size(), deviceMemcpyHostToDevice));
-    DEVICE_CHECK(deviceMemcpy(d_B, h_B.data(), sizeof(std::complex<double>) * h_B.size(), deviceMemcpyHostToDevice));
-    DEVICE_CHECK(deviceMemcpy(d_C, h_C.data(), sizeof(std::complex<double>) * h_C.size(), deviceMemcpyHostToDevice));
+    RUNTIME_CHECK(runtimeMemcpy(d_A, h_A.data(), sizeof(std::complex<double>) * h_A.size(), runtimeMemcpyHostToDevice));
+    RUNTIME_CHECK(runtimeMemcpy(d_B, h_B.data(), sizeof(std::complex<double>) * h_B.size(), runtimeMemcpyHostToDevice));
+    RUNTIME_CHECK(runtimeMemcpy(d_C, h_C.data(), sizeof(std::complex<double>) * h_C.size(), runtimeMemcpyHostToDevice));
 
     std::complex<double> alpha(1.0, 0.0);
     std::complex<double> beta(0.0, 0.0);
 
     double start = MPI_Wtime();
     pgemm(transa, transb, m, n, k, alpha, d_A, descA, d_B, descB, beta, d_C, descC);
-    DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
     double elapsed = MPI_Wtime() - start;
 
     std::vector<std::complex<double>> h_C_out(descC.m_loc() * descC.n_loc());
-    DEVICE_CHECK(deviceMemcpy(h_C_out.data(), d_C, sizeof(std::complex<double>) * h_C_out.size(), deviceMemcpyDeviceToHost));
+    RUNTIME_CHECK(runtimeMemcpy(h_C_out.data(), d_C, sizeof(std::complex<double>) * h_C_out.size(), runtimeMemcpyDeviceToHost));
 
     int nprocs;
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
@@ -148,9 +148,9 @@ void check_pgemm(char transa, char transb,
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-    DEVICE_CHECK(deviceFree(d_A));
-    DEVICE_CHECK(deviceFree(d_B));
-    DEVICE_CHECK(deviceFree(d_C));
+    RUNTIME_CHECK(runtimeFree(d_A));
+    RUNTIME_CHECK(runtimeFree(d_B));
+    RUNTIME_CHECK(runtimeFree(d_C));
 }
 
 } // anonymous namespace

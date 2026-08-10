@@ -1,8 +1,9 @@
 #include <ddla/ddla.h>
 #include <complex>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
-#include <ddla/ddla_comm.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
+#include "comm_traits.h"
 #include <ddla/swap.h>
 
 #include "pgetf2_kernels.h"
@@ -36,15 +37,11 @@ void pgetf2(
 {
     (void)m;
     DdlaHandle_t ddla_handle = array_descA.ddla_handle();
+    detail::require_gpu_backend(ddla_handle, "pgetf2");
 
     MPI_Comm row_comm = ddla_handle->row_comm;
     MPI_Comm col_comm = ddla_handle->col_comm;
 
-    #ifdef DDLA_USE_CCL
-    ncclComm_t col_nccl_comm = ddla_handle->nccl_col_comm;
-    #else
-    MPI_Comm col_nccl_comm = ddla_handle->col_comm;
-    #endif
     int nprows = array_descA.nprows();
     int npcols = array_descA.npcols();
     int myprow = array_descA.myprow();
@@ -55,7 +52,7 @@ void pgetf2(
     int lld = array_descA.lld();
     int nb = array_descA.nb();
 
-    deviceStream_t stream=ddla_handle->stream;
+    runtimeStream_t stream=ddla_handle->stream;
     deblasHandle_t blasH=ddla_handle->blasH;
     
     int max_row;
@@ -64,15 +61,13 @@ void pgetf2(
 
     T *d_temp;
     const size_t row_buffer_elems = static_cast<size_t>(n_loc > 0 ? n_loc : 1);
-    DEVICE_CHECK(deviceMallocAsync(&d_temp, sizeof(T)*row_buffer_elems, stream));
+    RUNTIME_CHECK(runtimeMallocAsync(&d_temp, sizeof(T)*row_buffer_elems, stream));
 
     T *d_temp_peer = nullptr;
-    #ifdef DDLA_USE_CCL
-    DEVICE_CHECK(deviceMallocAsync(&d_temp_peer, sizeof(T)*row_buffer_elems, stream));
-    #endif
+    RUNTIME_CHECK(runtimeMallocAsync(&d_temp_peer, sizeof(T)*row_buffer_elems, stream));
 
     void* d_pivot_workspace = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(
+    RUNTIME_CHECK(runtimeMallocAsync(
         &d_pivot_workspace, detail::pgetf2_pivot_workspace_size<T>(), stream));
     
 
@@ -146,77 +141,39 @@ void pgetf2(
                 ));
         }else{
             if(myprow == owner_row){
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_temp, sizeof(T),
                     d_A + i_panel, lld * sizeof(T),
                     sizeof(T), n_loc,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
-                #ifdef DDLA_USE_CCL
-                CCL_CHECK(ncclGroupStart());
-                CCL_CHECK(
-                    cclSend(d_temp, n_loc, max_prow, col_nccl_comm, stream)
-                );
-                CCL_CHECK(
-                    cclRecv(d_temp_peer, n_loc, max_prow, col_nccl_comm, stream)
-                );
-                CCL_CHECK(ncclGroupEnd());
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                commGroupStart(ddla_handle);
+                commSend(ddla_handle, CommScope::Col, d_temp, (std::size_t)n_loc, max_prow);
+                commRecv(ddla_handle, CommScope::Col, d_temp_peer, (std::size_t)n_loc, max_prow);
+                commGroupEnd(ddla_handle);
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_A + i_panel, lld * sizeof(T),
                     d_temp_peer, sizeof(T),
                     sizeof(T), n_loc,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
-                #else
-                CCL_CHECK(
-                    cclSend(d_temp, n_loc, max_prow, col_nccl_comm, stream)
-                );
-                CCL_CHECK(
-                    cclRecv(d_temp, n_loc, max_prow, col_nccl_comm, stream)
-                );
-                BLAS_CHECK(deblasSwap(
-                    blasH, n_loc,
-                    d_A + i_panel, lld,
-                    d_temp, 1
-                ));
-                #endif
-                
             }else if(myprow == max_prow){
-                #ifdef DDLA_USE_CCL
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_temp, sizeof(T),
                     d_A + max_loc_row, lld * sizeof(T),
                     sizeof(T), n_loc,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
-                CCL_CHECK(ncclGroupStart());
-                CCL_CHECK(
-                    cclSend(d_temp, n_loc, owner_row, col_nccl_comm, stream)
-                );
-                CCL_CHECK(
-                    cclRecv(d_temp_peer, n_loc, owner_row, col_nccl_comm, stream)
-                );
-                CCL_CHECK(ncclGroupEnd());
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                commGroupStart(ddla_handle);
+                commSend(ddla_handle, CommScope::Col, d_temp, (std::size_t)n_loc, owner_row);
+                commRecv(ddla_handle, CommScope::Col, d_temp_peer, (std::size_t)n_loc, owner_row);
+                commGroupEnd(ddla_handle);
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_A + max_loc_row, lld * sizeof(T),
                     d_temp_peer, sizeof(T),
                     sizeof(T), n_loc,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
-                #else
-                CCL_CHECK(
-                    cclRecv(d_temp, n_loc, owner_row, col_nccl_comm, stream)
-                );
-                BLAS_CHECK(deblasSwap(
-                    blasH, n_loc,
-                    d_A + max_loc_row, lld,
-                    d_temp, 1
-                ));
-                CCL_CHECK(
-                    cclSend(d_temp, n_loc, owner_row, col_nccl_comm, stream)
-                );
-                #endif
-                
             }
         }
         if(std::abs(max_value) == 0.0){
@@ -237,28 +194,26 @@ void pgetf2(
             }
             int length_col = nb_real - i_tf2 - 1;
             if(myprow == owner_row && length_col>0){
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_temp, 1 * sizeof(T),
                     d_A + i_panel + (j_panel + 1) * lld, lld * sizeof(T),
                     1*sizeof(T), length_col,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
             }
             if(length_col>0)
-                CCL_CHECK(cclBcast(d_temp, length_col, owner_row, col_nccl_comm, stream));
+                commBcast(ddla_handle, CommScope::Col, d_temp, (std::size_t)length_col, owner_row);
             T* d_trailing = length_col > 0 ? d_A + a_off + lld : d_A + a_off;
             detail::pgetf2_scale_update(
                 length_row, length_col, inverse_pivot,
                 d_A + a_off, d_temp, d_trailing, lld, stream);
         }
     }
-    DEVICE_CHECK(deviceFreeAsync(d_temp, stream));
-    #ifdef DDLA_USE_CCL
-    DEVICE_CHECK(deviceFreeAsync(d_temp_peer, stream));
-    #endif
-    DEVICE_CHECK(deviceFreeAsync(d_pivot_workspace, stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_temp, stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_temp_peer, stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_pivot_workspace, stream));
     if(info != 0){
-        DEVICE_CHECK(deviceStreamSynchronize(stream));
+        RUNTIME_CHECK(runtimeStreamSynchronize(stream));
     }
 }
 

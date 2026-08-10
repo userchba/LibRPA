@@ -69,7 +69,14 @@ inline void scal(
 ){
     #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
     if(DeviceConnector::check_device_ptr((void*)X)){
-        ddla::BLAS_CHECK(ddla::deblasScal(array_desc.ddla_desc().ddla_handle()->blasH, N, alpha, X, incX));
+        // ddla::scal requires alpha and x to share type T, and the new LibDDLA
+        // exposes no public accessor for the raw BLAS handle (the mixed-type
+        // deblasScal overloads used to be reached through
+        // array_desc.ddla_desc().ddla_handle()->blasH, which is no longer
+        // valid now that DdlaStream is opaque). Promote a real alpha to T2
+        // (e.g. the ELPA sqrt-Coulomb eigenvalue scaling of a complex buffer
+        // by a real factor); this is numerically identical to zdscal/csscal.
+        ddla::scal(array_desc.ddla_desc().ddla_handle(), N, static_cast<T2>(alpha), X, incX);
     }else
     #endif
     {
@@ -79,19 +86,24 @@ inline void scal(
 
 
 template <typename T1, typename T2>
-inline void pdam(const T1& num, T2* A, const ArrayDesc& array_desc)
+inline void pdam(const T1& num, T2* A, const ArrayDesc& array_desc, int n = -1)
 {
     if(array_desc.m() != array_desc.n()){
         throw std::runtime_error("In LaConnector::pdam, only square matrix is supported!");
     }
+    // n < 0 means the whole (descriptor-sized) matrix, matching ddla::pdam's
+    // own default; n >= 0 addresses only the leading n x n logical
+    // sub-matrix, e.g. epsilon.cpp's n_nonsingular-order eigenbasis solve,
+    // where the descriptor may be larger than the logical matrix.
+    const int n_eff = (n < 0) ? array_desc.m() : n;
     #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
     if(DeviceConnector::check_device_ptr((void*)A)){
-        ddla::pdam(num, A, array_desc.ddla_desc());
+        ddla::pdam(num, A, array_desc.ddla_desc(), n);
     }else
     #endif
     {
         #pragma omp parallel for
-        for (int i = 0; i != array_desc.m(); i++)
+        for (int i = 0; i != n_eff; i++)
         {
             const int ilo = array_desc.indx_g2l_r(i);
             if (ilo < 0) continue;
@@ -112,8 +124,8 @@ inline void axpy(
 ){
     #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
     if(DeviceConnector::check_device_ptr((void*)X)){
-        ddla::deblasAxpy(
-            blacs_h.ddla_handle->blasH,
+        ddla::axpy(
+            blacs_h.ddla_handle,
             N,
             alpha,
             X, incX,
@@ -161,11 +173,14 @@ inline void pgesv(
 )
 {
     #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
-    if(ia!=1 || ja!=1 || ib!=1 || ib!=1){
+    if(ia!=1 || ja!=1 || ib!=1 || jb!=1){
         throw std::runtime_error("In LaConnector::pgesv, only support ia=ja=ib=jb=1 for device implementation!");
     }
     if(DeviceConnector::check_device_ptr((void*)d_A)){
+        // ddla::pgesv gained leading (side, trans) parameters; LaConnector's
+        // own pgesv is always a plain left-hand solve of A*X=B.
         ddla::pgesv(
+            'L', 'N',
             n, nrhs,
             d_A, array_descA.ddla_desc(),
             d_B, array_descB.ddla_desc()
@@ -200,7 +215,7 @@ inline void pposv(
 {
     assert(side == 'L');
     #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
-    if(ia!=1 || ja!=1 || ib!=1 || ib!=1){
+    if(ia!=1 || ja!=1 || ib!=1 || jb!=1){
         throw std::runtime_error("In LaConnector::pposv, only support ia=ja=ib=jb=1 for device implementation!");
     }
     if(DeviceConnector::check_device_ptr((void*)d_A)){
@@ -215,6 +230,19 @@ inline void pposv(
     }else
     #endif
     {
+        // ScaLAPACK's PZPOSV has no head-aware equivalent: it has no notion
+        // of a tolerated indefinite pivot, so a head-corrected epsilon that
+        // is not globally positive definite simply fails here with info>0.
+        // Callers that need is_head on the host must fall back to pgesv (LU)
+        // themselves; this path never attempts the head correction.
+        if (is_head)
+        {
+            printf("Warning: LaConnector::pposv is_head=true requested on "
+                   "the CPU/ScaLAPACK path, which has no head-aware "
+                   "Cholesky; falling back to LU via LaConnector::pgesv.\n");
+            pgesv(n, nrhs, d_A, ia, ja, array_descA, d_B, ib, jb, array_descB, info);
+            return;
+        }
         assert(trans == 'N' && side == 'L');
         ScalapackConnector::pposv_f(
             uplo, n, nrhs,

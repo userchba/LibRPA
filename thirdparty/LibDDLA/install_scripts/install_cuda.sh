@@ -7,8 +7,8 @@
 #SBATCH --gres=gpu:0
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=3
-#SBATCH --output=../log_cuda
-#SBATCH --error=../err_cuda
+#SBATCH --output=../libddla_cuda.out
+#SBATCH --error=../libddla_cuda.out
 
 module load gcc/11.3.0
 module load openmpi/4.1.8-cuda

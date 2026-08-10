@@ -10,7 +10,8 @@
 #include <ddla/ddla.h>
 #include <ddla/ddla_comm.h>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
 #include <ddla/gemmBatched.h>
 #include <ddla/herk.h>
 #include <ddla/syrk.h>
@@ -74,6 +75,7 @@ void ppotrf_bottom_right(
     assert(descA.nprows() == descA.npcols());
 
     const DdlaHandle_t handle = descA.ddla_handle();
+    detail::require_gpu_backend(handle, "ppotrf_bottom_right");
     assert(handle != nullptr);
 
     info = 0;
@@ -89,7 +91,7 @@ void ppotrf_bottom_right(
     const int mypcol = descA.mypcol();
     const int lld = descA.lld();
 
-    const deviceStream_t stream = handle->stream;
+    const runtimeStream_t stream = handle->stream;
     const deblasHandle_t blas_handle = handle->blasH;
 
 #ifdef DDLA_USE_CCL
@@ -125,12 +127,12 @@ void ppotrf_bottom_right(
             *ptr = nullptr;
             return;
         }
-        DEVICE_CHECK(deviceMallocAsync(ptr, bytes, stream));
+        RUNTIME_CHECK(runtimeMallocAsync(ptr, bytes, stream));
     };
     auto device_free_if_nonnull = [&](void* ptr)
     {
         if(ptr != nullptr){
-            DEVICE_CHECK(deviceFreeAsync(ptr, stream));
+            RUNTIME_CHECK(runtimeFreeAsync(ptr, stream));
         }
     };
 
@@ -177,7 +179,7 @@ void ppotrf_bottom_right(
         device_free_if_nonnull(d_row_panel);
         device_free_if_nonnull(d_col_panel);
         device_free_if_nonnull(d_info);
-        DEVICE_CHECK(deviceStreamSynchronize(stream));
+        RUNTIME_CHECK(runtimeStreamSynchronize(stream));
     };
 
     const int last_block_start = ((n - 1) / nb) * nb;
@@ -221,11 +223,11 @@ void ppotrf_bottom_right(
         if(myprow == owner_row && mypcol == owner_col){
             const T* const d_local_diag = d_A + local_row_prefix
                                         + static_cast<std::size_t>(local_col_prefix) * lld;
-            DEVICE_CHECK(deviceMemcpy2DAsync(
+            RUNTIME_CHECK(runtimeMemcpy2DAsync(
                 d_diag, static_cast<std::size_t>(block_width) * sizeof(T),
                 d_local_diag, static_cast<std::size_t>(lld) * sizeof(T),
                 static_cast<std::size_t>(block_width) * sizeof(T), block_width,
-                deviceMemcpyDeviceToDevice, stream
+                runtimeMemcpyDeviceToDevice, stream
             ));
         }
 
@@ -273,14 +275,14 @@ void ppotrf_bottom_right(
                     d_diag, block_width,
                     d_local_panel, lld
                 ));
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_row_panel,
                     static_cast<std::size_t>(local_row_prefix) * sizeof(T),
                     d_local_panel,
                     static_cast<std::size_t>(lld) * sizeof(T),
                     static_cast<std::size_t>(local_row_prefix) * sizeof(T),
                     block_width,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
             }
 
@@ -309,11 +311,11 @@ void ppotrf_bottom_right(
                         block_start, nb, relay_row,
                         descA.irsrc(), nprocs_dim);
                     assert(relay_row_count == local_col_prefix);
-                    DEVICE_CHECK(deviceMemcpyAsync(
+                    RUNTIME_CHECK(runtimeMemcpyAsync(
                         d_col_panel, d_row_panel,
                         static_cast<std::size_t>(local_col_prefix)
                             * block_width * sizeof(T),
-                        deviceMemcpyDeviceToDevice, stream
+                        runtimeMemcpyDeviceToDevice, stream
                     ));
                 }
 
@@ -350,14 +352,14 @@ void ppotrf_bottom_right(
                         d_diag, block_width,
                         d_local_panel, lld
                     ));
-                    DEVICE_CHECK(deviceMemcpy2DAsync(
+                    RUNTIME_CHECK(runtimeMemcpy2DAsync(
                         d_col_panel,
                         static_cast<std::size_t>(block_width) * sizeof(T),
                         d_local_panel,
                         static_cast<std::size_t>(lld) * sizeof(T),
                         static_cast<std::size_t>(block_width) * sizeof(T),
                         local_col_prefix,
-                        deviceMemcpyDeviceToDevice, stream
+                        runtimeMemcpyDeviceToDevice, stream
                     ));
                 }
 
@@ -385,11 +387,11 @@ void ppotrf_bottom_right(
                         block_start, nb, relay_col,
                         descA.icsrc(), nprocs_dim);
                     assert(relay_col_count == local_row_prefix);
-                    DEVICE_CHECK(deviceMemcpyAsync(
+                    RUNTIME_CHECK(runtimeMemcpyAsync(
                         d_row_panel, d_col_panel,
                         static_cast<std::size_t>(local_row_prefix)
                             * block_width * sizeof(T),
-                        deviceMemcpyDeviceToDevice, stream
+                        runtimeMemcpyDeviceToDevice, stream
                     ));
                 }
 
@@ -462,15 +464,15 @@ void ppotrf_bottom_right(
         if(batch_count > 0){
             const std::size_t active_pointer_bytes =
                 static_cast<std::size_t>(batch_count) * sizeof(T*);
-            DEVICE_CHECK(deviceMemcpyAsync(
+            RUNTIME_CHECK(runtimeMemcpyAsync(
                 d_left_array, h_left_array.data(), active_pointer_bytes,
-                deviceMemcpyHostToDevice, stream));
-            DEVICE_CHECK(deviceMemcpyAsync(
+                runtimeMemcpyHostToDevice, stream));
+            RUNTIME_CHECK(runtimeMemcpyAsync(
                 d_right_array, h_right_array.data(), active_pointer_bytes,
-                deviceMemcpyHostToDevice, stream));
-            DEVICE_CHECK(deviceMemcpyAsync(
+                runtimeMemcpyHostToDevice, stream));
+            RUNTIME_CHECK(runtimeMemcpyAsync(
                 d_target_array, h_target_array.data(), active_pointer_bytes,
-                deviceMemcpyHostToDevice, stream));
+                runtimeMemcpyHostToDevice, stream));
 
             const T minus_one = T(-1);
             const T one = T(1);

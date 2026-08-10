@@ -1,8 +1,9 @@
 #include <ddla/ptran.h>
 #include <ddla/ddla.h>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
-#include <ddla/ddla_comm.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
+#include "comm_traits.h"
 #include <thrust/complex.h>
 #include <vector>
 #include <algorithm>
@@ -105,7 +106,7 @@ __global__ void transpose_blocks_kernel(
 }
 
 // ---- Kernel: batched scatter (copy without transpose) ----
-// Replaces N deviceMemcpy2DAsync calls with a single kernel launch.
+// Replaces N runtimeMemcpy2DAsync calls with a single kernel launch.
 // Copies bn x bm blocks from compact recv buffer to strided dest.
 template <typename devT>
 __global__ void scatter_blocks_kernel(
@@ -129,18 +130,6 @@ __global__ void scatter_blocks_kernel(
     }
 }
 
-template <typename T>
-static inline MPI_Datatype mpi_type();
-
-template <>
-MPI_Datatype mpi_type<float>(){ return MPI_FLOAT; }
-template <>
-MPI_Datatype mpi_type<double>(){ return MPI_DOUBLE; }
-template <>
-MPI_Datatype mpi_type<std::complex<float>>(){ return MPI_CXX_FLOAT_COMPLEX; }
-template <>
-MPI_Datatype mpi_type<std::complex<double>>(){ return MPI_CXX_DOUBLE_COMPLEX; }
-
 /**
  * @brief Distributed out-of-place matrix transpose (optionally conjugate).
  *
@@ -154,12 +143,12 @@ MPI_Datatype mpi_type<std::complex<double>>(){ return MPI_CXX_DOUBLE_COMPLEX; }
  *
  * Performance improvements over the original per-block geam/memcpy2D loop:
  *   - P0: Three fused CUDA kernels replace thousands of per-block kernel launches.
- *   - P0: Redundant deviceDeviceSynchronize() in pgemm.cpp removed.
+ *   - P0: Redundant runtimeDeviceSynchronize() in pgemm.cpp removed.
  *   - P1: Phase 4 (local transpose) runs on stream_data, overlapping with
  *         Phase 3+5+6 (pack + communication + scatter) on stream.
  *
- * All device allocations use deviceMallocAsync/deviceFreeAsync (stream-ordered),
- * eliminating the deviceStreamSynchronize that synchronous free requires and
+ * All device allocations use runtimeMallocAsync/runtimeFreeAsync (stream-ordered),
+ * eliminating the runtimeStreamSynchronize that synchronous free requires and
  * allowing the free to overlap with subsequent stream work.
  */
 template <typename T>
@@ -177,6 +166,7 @@ void ptran(const T* d_A, const DdlaDesc& descA,
     assert(descAT.npcols() == descA.npcols());
 
     DdlaHandle_t handle = descA.ddla_handle();
+    detail::require_gpu_backend(handle, "ptran");
     int myrank = handle->myid;
     int Pr = descA.nprows();
     int Pc = descA.npcols();
@@ -288,14 +278,14 @@ void ptran(const T* d_A, const DdlaDesc& descA,
     const devT* d_A_dev = reinterpret_cast<const devT*>(d_A);
     devT* d_AT_dev = reinterpret_cast<devT*>(d_AT);
 
-    deviceStream_t stream = handle->stream;
-    deviceStream_t stream_data = handle->stream_data;
+    runtimeStream_t stream = handle->stream;
+    runtimeStream_t stream_data = handle->stream_data;
 
     // ---- Phase 2: allocate device buffers ----
     T* d_sendbuf = nullptr;
     T* d_recvbuf = nullptr;
-    if(send_total > 0) DEVICE_CHECK(deviceMallocAsync(reinterpret_cast<void**>(&d_sendbuf), sizeof(T) * send_total, stream));
-    if(recv_total > 0) DEVICE_CHECK(deviceMallocAsync(reinterpret_cast<void**>(&d_recvbuf), sizeof(T) * recv_total, stream));
+    if(send_total > 0) RUNTIME_CHECK(runtimeMallocAsync(reinterpret_cast<void**>(&d_sendbuf), sizeof(T) * send_total, stream));
+    if(recv_total > 0) RUNTIME_CHECK(runtimeMallocAsync(reinterpret_cast<void**>(&d_recvbuf), sizeof(T) * recv_total, stream));
     devT* d_sendbuf_dev = reinterpret_cast<devT*>(d_sendbuf);
     devT* d_recvbuf_dev = reinterpret_cast<devT*>(d_recvbuf);
 
@@ -313,16 +303,16 @@ void ptran(const T* d_A, const DdlaDesc& descA,
                          b.offset,
                          descA.lld(), b.bn};
         }
-        DEVICE_CHECK(deviceMallocAsync(reinterpret_cast<void**>(&d_pack_blocks),
+        RUNTIME_CHECK(runtimeMallocAsync(reinterpret_cast<void**>(&d_pack_blocks),
             sizeof(TransBlockInfo) * h_pack.size(), stream));
-        DEVICE_CHECK(deviceMemcpyAsync(d_pack_blocks, h_pack.data(),
-            sizeof(TransBlockInfo) * h_pack.size(), deviceMemcpyHostToDevice, stream));
+        RUNTIME_CHECK(runtimeMemcpyAsync(d_pack_blocks, h_pack.data(),
+            sizeof(TransBlockInfo) * h_pack.size(), runtimeMemcpyHostToDevice, stream));
 
         dim3 grid_dim(static_cast<int>(send_blocks.size()), 1, 1);
         transpose_blocks_kernel<devT><<<grid_dim, block_dim, 0, stream>>>(
             d_A_dev, d_sendbuf_dev, d_pack_blocks,
             static_cast<int>(send_blocks.size()), conj);
-        DEVICE_CHECK(deviceGetLastError());
+        RUNTIME_CHECK(runtimeGetLastError());
     }
 
     // ---- Phase 4: local transpose (fused kernel: d_A -> d_AT) ----
@@ -336,35 +326,19 @@ void ptran(const T* d_A, const DdlaDesc& descA,
                           b.lrow_AT + b.lcol_AT * descAT.lld(),
                           descA.lld(), descAT.lld()};
         }
-        DEVICE_CHECK(deviceMallocAsync(reinterpret_cast<void**>(&d_local_blocks),
+        RUNTIME_CHECK(runtimeMallocAsync(reinterpret_cast<void**>(&d_local_blocks),
             sizeof(TransBlockInfo) * h_local.size(), stream));
-        DEVICE_CHECK(deviceMemcpyAsync(d_local_blocks, h_local.data(),
-            sizeof(TransBlockInfo) * h_local.size(), deviceMemcpyHostToDevice, stream));
+        RUNTIME_CHECK(runtimeMemcpyAsync(d_local_blocks, h_local.data(),
+            sizeof(TransBlockInfo) * h_local.size(), runtimeMemcpyHostToDevice, stream));
 
         dim3 grid_dim(static_cast<int>(local_blocks.size()), 1, 1);
         transpose_blocks_kernel<devT><<<grid_dim, block_dim, 0, stream>>>(
             d_A_dev, d_AT_dev, d_local_blocks,
             static_cast<int>(local_blocks.size()), conj);
-        DEVICE_CHECK(deviceGetLastError());
+        RUNTIME_CHECK(runtimeGetLastError());
     }
 
     // ---- Phase 5: communication ----
-    #ifdef DDLA_USE_CCL
-    // NCCL: batch all send/recv in one group — device-to-device, no host staging.
-    if(send_total > 0 || recv_total > 0){
-        CCL_CHECK(ncclGroupStart());
-        for(auto& b : send_blocks){
-            CCL_CHECK(cclSend(d_sendbuf + b.offset, b.bm * b.bn,
-                              b.dst_rank, handle->nccl_comm, handle->stream));
-        }
-        for(auto& b : recv_blocks){
-            CCL_CHECK(cclRecv(d_recvbuf + b.offset, b.bm * b.bn,
-                              b.src_rank, handle->nccl_comm, handle->stream));
-        }
-        CCL_CHECK(ncclGroupEnd());
-    }
-    #else
-    // MPI fallback: Alltoallv with host staging (single collective, not per-block).
     if(send_total > 0 || recv_total > 0){
         std::vector<int> sendcounts(nprocs, 0), recvcounts(nprocs, 0);
         std::vector<int> sdispls(nprocs, 0), rdispls(nprocs, 0);
@@ -374,22 +348,10 @@ void ptran(const T* d_A, const DdlaDesc& descA,
             sdispls[p] = sdispls[p-1] + sendcounts[p-1];
             rdispls[p] = rdispls[p-1] + recvcounts[p-1];
         }
-        std::vector<T> h_sendbuf(send_total), h_recvbuf(recv_total);
-        if(send_total > 0){
-            DEVICE_CHECK(deviceMemcpyAsync(h_sendbuf.data(), d_sendbuf,
-                sizeof(T) * send_total, deviceMemcpyDeviceToHost, stream));
-            DEVICE_CHECK(deviceStreamSynchronize(stream));
-        }
-        MPI_Alltoallv(h_sendbuf.data(), sendcounts.data(), sdispls.data(), mpi_type<T>(),
-                      h_recvbuf.data(), recvcounts.data(), rdispls.data(), mpi_type<T>(),
-                      handle->comm);
-        if(recv_total > 0){
-            DEVICE_CHECK(deviceMemcpyAsync(d_recvbuf, h_recvbuf.data(),
-                sizeof(T) * recv_total, deviceMemcpyHostToDevice, stream));
-            DEVICE_CHECK(deviceStreamSynchronize(stream));
-        }
+        commAlltoallv(handle, CommScope::Grid, nprocs,
+                      d_sendbuf, sendcounts.data(), sdispls.data(),
+                      d_recvbuf, recvcounts.data(), rdispls.data());
     }
-    #endif
 
     // ---- Phase 6: scatter recv data into d_AT (fused kernel) ----
     TransBlockInfo* d_scatter_blocks = nullptr;
@@ -402,25 +364,25 @@ void ptran(const T* d_A, const DdlaDesc& descA,
                             b.lrow_AT + b.lcol_AT * descAT.lld(),
                             b.bn, descAT.lld()};
         }
-        DEVICE_CHECK(deviceMallocAsync(reinterpret_cast<void**>(&d_scatter_blocks),
+        RUNTIME_CHECK(runtimeMallocAsync(reinterpret_cast<void**>(&d_scatter_blocks),
             sizeof(TransBlockInfo) * h_scatter.size(), stream));
-        DEVICE_CHECK(deviceMemcpyAsync(d_scatter_blocks, h_scatter.data(),
-            sizeof(TransBlockInfo) * h_scatter.size(), deviceMemcpyHostToDevice, stream));
+        RUNTIME_CHECK(runtimeMemcpyAsync(d_scatter_blocks, h_scatter.data(),
+            sizeof(TransBlockInfo) * h_scatter.size(), runtimeMemcpyHostToDevice, stream));
 
         dim3 grid_dim(static_cast<int>(recv_blocks.size()), 1, 1);
         scatter_blocks_kernel<devT><<<grid_dim, block_dim, 0, stream>>>(
             d_recvbuf_dev, d_AT_dev, d_scatter_blocks,
             static_cast<int>(recv_blocks.size()));
-        DEVICE_CHECK(deviceGetLastError());
+        RUNTIME_CHECK(runtimeGetLastError());
     }
 
     // ---- Finalize ----
     // Free device buffers (async free is stream-ordered, no sync needed).
-    if(d_sendbuf)        DEVICE_CHECK(deviceFreeAsync(d_sendbuf, stream));
-    if(d_recvbuf)        DEVICE_CHECK(deviceFreeAsync(d_recvbuf, stream));
-    if(d_pack_blocks)    DEVICE_CHECK(deviceFreeAsync(d_pack_blocks, stream));
-    if(d_scatter_blocks) DEVICE_CHECK(deviceFreeAsync(d_scatter_blocks, stream));
-    if(d_local_blocks)   DEVICE_CHECK(deviceFreeAsync(d_local_blocks, stream));
+    if(d_sendbuf)        RUNTIME_CHECK(runtimeFreeAsync(d_sendbuf, stream));
+    if(d_recvbuf)        RUNTIME_CHECK(runtimeFreeAsync(d_recvbuf, stream));
+    if(d_pack_blocks)    RUNTIME_CHECK(runtimeFreeAsync(d_pack_blocks, stream));
+    if(d_scatter_blocks) RUNTIME_CHECK(runtimeFreeAsync(d_scatter_blocks, stream));
+    if(d_local_blocks)   RUNTIME_CHECK(runtimeFreeAsync(d_local_blocks, stream));
 }
 
 template void ptran<float>(const float* d_A, const DdlaDesc& descA, float* d_AT, const DdlaDesc& descAT, bool conj);

@@ -1,235 +1,278 @@
 #include <ddla/ddla.h>
 #include <algorithm>
 #include <cassert>
+#include <stdexcept>
+#include <string>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include <ddla/ddla_config.h>
+#include <ddla/ddla_desc.h>
+#include "ddla_stream_impl.h"
 #include <vector>
 #include <ddla/transport_block.h>
-#include <ddla/ddla_comm.h>
 #include <ddla/gemm.h>
+#include <ddla/scal.h>
 
-namespace ddla{
+// CPU-only includes (no GPU vendor headers pulled in by these; safe in any
+// build -- DDLA_HAS_CPU below still gates whether the CPU pgemm/transport
+// paths are ever compiled).
+#include <cstdlib>
+#include <complex>
+#include <new>
 
-template <typename T>
+namespace ddla {
+
+inline const char* pgemm_backend_name(DdlaBackend backend)
+{
+    return backend == DdlaBackend::CPU ? "CPU" : "GPU";
+}
+
+
+template <DdlaBackend Backend, typename T>
 void pgemm(
     const char& transa, const char& transb,
     const int& m, const int& n, const int& k,
     const T& alpha,
-    const T* d_A, const DdlaDesc& array_descA,
-    const T* d_B, const DdlaDesc& array_descB,
+    const T* A, const DdlaDesc& descA,
+    const T* B, const DdlaDesc& descB,
     const T& beta,
-    T* d_C, const DdlaDesc& array_descC
-)
+    T* C, const DdlaDesc& descC)
 {
-    DdlaHandle_t ddla_handle = array_descA.ddla_handle();
+    static_assert(Backend != DdlaBackend::CPU || DDLA_HAS_CPU,
+                  "CPU pgemm is not available in this LibDDLA build");
+    static_assert(Backend != DdlaBackend::GPU || DDLA_HAS_GPU,
+                  "GPU pgemm is not available in this LibDDLA build");
+
+    DdlaHandle_t h = descA.ddla_handle();
+
+    // Validate same-handle requirement (deterministic error instead of assert)
+    if (h == nullptr) {
+        throw std::runtime_error("pgemm: null handle on descA");
+    }
+    if (descA.ddla_handle() != descB.ddla_handle() ||
+        descA.ddla_handle() != descC.ddla_handle()) {
+        throw std::runtime_error("pgemm: descriptor handle mismatch");
+    }
+    if (!descA.is_initialized() || !descB.is_initialized() || !descC.is_initialized()) {
+        throw std::runtime_error("pgemm: uninitialized descriptor");
+    }
+
+    const DdlaBackend actual_backend = ddla_get_backend(h);
+    if (actual_backend != Backend) {
+        throw std::runtime_error(
+            std::string("pgemm: template backend ") + pgemm_backend_name(Backend) +
+            " does not match descriptor handle backend " +
+            pgemm_backend_name(actual_backend));
+    }
+
+    // ---- SUMMA implementation (double-buffered panel pipeline) -------------
     assert(transa == 'N' || transa == 'T' || transa == 'C');
     assert(transb == 'N' || transb == 'T' || transb == 'C');
-    assert(m > 0 && n > 0 && k > 0);
+    assert(m >= 0 && n >= 0 && k >= 0);
 
-    const int opA_m = (transa == 'N') ? array_descA.m() : array_descA.n();
-    const int opA_n = (transa == 'N') ? array_descA.n() : array_descA.m();
-    const int opB_m = (transb == 'N') ? array_descB.m() : array_descB.n();
-    const int opB_n = (transb == 'N') ? array_descB.n() : array_descB.m();
+    const int opA_m = (transa == 'N') ? descA.m() : descA.n();
+    const int opA_n = (transa == 'N') ? descA.n() : descA.m();
+    const int opB_m = (transb == 'N') ? descB.m() : descB.n();
+    const int opB_n = (transb == 'N') ? descB.n() : descB.m();
     assert(m <= opA_m);
     assert(k <= opA_n);
     assert(k <= opB_m);
     assert(n <= opB_n);
-    assert(m <= array_descC.m() && n <= array_descC.n());
+    assert(m <= descC.m() && n <= descC.n());
     {
-        int mbA,kbA,kbB,nbB,mbC,nbC;
-        mbC = array_descC.mb();
-        nbC = array_descC.nb();
-        if(transa == 'N'){
-            mbA = array_descA.mb();
-            kbA = array_descA.nb();
-        }else{
-            mbA = array_descA.nb();
-            kbA = array_descA.mb();
+        int mbA, kbA, kbB, nbB, mbC, nbC;
+        mbC = descC.mb();
+        nbC = descC.nb();
+        if (transa == 'N') {
+            mbA = descA.mb();
+            kbA = descA.nb();
+        } else {
+            mbA = descA.nb();
+            kbA = descA.mb();
         }
-
-        if(transb == 'N'){
-            kbB = array_descB.mb();
-            nbB = array_descB.nb();
-        }else{
-            kbB = array_descB.nb();
-            nbB = array_descB.mb();
+        if (transb == 'N') {
+            kbB = descB.mb();
+            nbB = descB.nb();
+        } else {
+            kbB = descB.nb();
+            nbB = descB.mb();
         }
         assert(mbA == mbC);
         assert(kbA == kbB);
         assert(nbB == nbC);
     }
 
-    #ifdef DDLA_USE_CCL
-    ncclComm_t row_nccl_comm = ddla_handle->nccl_row_comm;
-    ncclComm_t col_nccl_comm = ddla_handle->nccl_col_comm;
-    #else
-    MPI_Comm row_nccl_comm = ddla_handle->row_comm;
-    MPI_Comm col_nccl_comm = ddla_handle->col_comm;
-    #endif
-    int nprows = array_descC.nprows();
-    int npcols = array_descC.npcols();
-    int myprow = array_descC.myprow();
-    int mypcol = array_descC.mypcol();
-
-    const int m_loc_A = num_loc((transa == 'N') ? m : k, array_descA.mb(), array_descA.myprow(), array_descA.irsrc(), array_descA.nprows());
-    const int n_loc_A = num_loc((transa == 'N') ? k : m, array_descA.nb(), array_descA.mypcol(), array_descA.icsrc(), array_descA.npcols());
-    const int m_loc_B = num_loc((transb == 'N') ? k : n, array_descB.mb(), array_descB.myprow(), array_descB.irsrc(), array_descB.nprows());
-    const int n_loc_B = num_loc((transb == 'N') ? n : k, array_descB.nb(), array_descB.mypcol(), array_descB.icsrc(), array_descB.npcols());
-    const int m_loc_C = num_loc(m, array_descC.mb(), array_descC.myprow(), array_descC.irsrc(), array_descC.nprows());
-    const int n_loc_C = num_loc(n, array_descC.nb(), array_descC.mypcol(), array_descC.icsrc(), array_descC.npcols());
-
     int nb;
-    if(transa=='N')
-        nb = array_descA.nb();
+    if (transa == 'N')
+        nb = descA.nb();
     else
-        nb = array_descA.mb();
-    int lldA = array_descA.lld();
-    int lldB = array_descB.lld();
-    int lldC = array_descC.lld();
+        nb = descA.mb();
 
-    deviceStream_t stream = ddla_handle->stream;
-    deviceStream_t stream_data = ddla_handle->stream_data;
-    deblasHandle_t blasH = ddla_handle->blasH;
+    const int m_loc_C = num_loc(m, descC.mb(), descC.myprow(), descC.irsrc(), descC.nprows());
+    const int n_loc_C = num_loc(n, descC.nb(), descC.mypcol(), descC.icsrc(), descC.npcols());
+    const int lldC = descC.lld();
 
-    deblasOperation_t opA = (transa == 'N') ? DEBLAS_OP_N :
-                            (transa == 'T') ? DEBLAS_OP_T : DEBLAS_OP_C;
+    // ---- Degenerate-size fast paths (F2) -----------------------------------
+    // ScaLAPACK's PxGEMM contract: an empty output (m==0 or n==0) is a no-op,
+    // and k==0 reduces to C := beta*C with A/B untouched. Both cases used to
+    // fall through the k-loop below, which never executes when k==0, so C
+    // was silently left unscaled by beta -- this restores that contract for
+    // both backends without ever allocating the SUMMA panel buffers.
+    if (m == 0 || n == 0) {
+        return;
+    }
+    if (k == 0) {
+        // F2 fast path: C := beta*C via one unified ddla::scal<Backend,T>
+        // call per column.
+        if (m_loc_C > 0 && n_loc_C > 0) {
+            for (int j = 0; j < n_loc_C; ++j) {
+                ddla::scal<Backend, T>(
+                    h, m_loc_C, beta,
+                    C + static_cast<std::size_t>(j) * lldC, 1);
+            }
+        }
+        return;
+    }
 
+    // Buffer sizing
+    const int m_loc_A = num_loc((transa == 'N') ? m : k, descA.mb(), descA.myprow(), descA.irsrc(), descA.nprows());
+    const int n_loc_A = num_loc((transa == 'N') ? k : m, descA.nb(), descA.mypcol(), descA.icsrc(), descA.npcols());
+    const int m_loc_B = num_loc((transb == 'N') ? k : n, descB.mb(), descB.myprow(), descB.irsrc(), descB.nprows());
+    const int n_loc_B = num_loc((transb == 'N') ? n : k, descB.nb(), descB.mypcol(), descB.icsrc(), descB.npcols());
+
+    // Scratch buffers (GPU stream-scratch or CPU heap) for the SUMMA panel
+    // pipeline, freed explicitly below. runtimeMalloc/runtimeFree never throw
+    // -- RUNTIME_CHECK calls exit(EXIT_FAILURE) on failure instead -- and the
+    // transport_block/gemm/scal calls below only throw for a null handle or a
+    // backend mismatch, neither of which can occur here since `h` and
+    // `Backend` are already validated above and passed through unchanged. So
+    // there is no exception path between these allocations and the frees at
+    // the end of this function.
     const int buffer_max = 2;
-    T *d_A_temp[buffer_max],*d_B_temp[buffer_max];
+    T* d_A_temp[buffer_max] = {nullptr, nullptr};
+    T* d_B_temp[buffer_max] = {nullptr, nullptr};
     int count_a = ((transa == 'N') ? std::max(m_loc_A, m_loc_C) : std::max(n_loc_A, m_loc_C)) * nb;
     int count_b = nb * ((transb == 'N') ? std::max(n_loc_B, n_loc_C) : std::max(m_loc_B, n_loc_C));
     count_a = std::max(1, count_a);
     count_b = std::max(1, count_b);
-    #ifdef DDLA_USE_GPU_CPU_TUNNEL
-    std::vector<T> h_temp(std::max(count_a, count_b));
-    #endif
-    for(int i=0;i<buffer_max;i++){
-        DEVICE_CHECK(deviceMallocAsync(&d_A_temp[i], sizeof(T) * count_a, stream_data));
-        DEVICE_CHECK(deviceMallocAsync(&d_B_temp[i], sizeof(T) * count_b, stream_data));
+    for (int i = 0; i < buffer_max; i++) {
+        RUNTIME_CHECK<Backend>(runtimeMalloc<Backend>(
+            reinterpret_cast<void**>(&d_A_temp[i]), count_a * sizeof(T)));
+        RUNTIME_CHECK<Backend>(runtimeMalloc<Backend>(
+            reinterpret_cast<void**>(&d_B_temp[i]), count_b * sizeof(T)));
     }
 
     int temp_buffer = 0;
-    int k_s = 0 , kb;
-    auto get_data = [&](int k_s) 
-    {
-        kb = std::min(nb, k - k_s);
-        if(kb<=0) return;
+    int k_s = 0, kb = 0;
+    auto get_data = [&](int ks) {
+        kb = std::min(nb, k - ks);
+        if (kb <= 0) return;
         char sData_a;
         int m_a, n_a, g_ia, g_ja;
-        if(transa != 'N'){
+        if (transa != 'N') {
             sData_a = 'R';
             m_a = kb;
             n_a = m;
-            g_ia = k_s;
+            g_ia = ks;
             g_ja = 0;
-        }else{
+        } else {
             sData_a = 'C';
             m_a = m;
             n_a = kb;
             g_ia = 0;
-            g_ja = k_s;
+            g_ja = ks;
         }
-        transport_block(
+        ddla::transport_block<Backend, T>(
             sData_a, transa,
             m_a, n_a,
-            d_A, g_ia, g_ja, array_descA,
-            d_A_temp[temp_buffer] 
-        );
-        // // end communicate A
+            A, g_ia, g_ja, descA,
+            d_A_temp[temp_buffer]);
 
-        // int src_B;
-        // start communicate B
         char sData_b;
         int m_b, n_b, g_ib, g_jb;
-        if(transb != 'N'){
+        if (transb != 'N') {
             sData_b = 'C';
             m_b = n;
             n_b = kb;
             g_ib = 0;
-            g_jb = k_s;
-        }else{
+            g_jb = ks;
+        } else {
             sData_b = 'R';
             m_b = kb;
             n_b = n;
-            g_ib = k_s;
+            g_ib = ks;
             g_jb = 0;
         }
-        transport_block(
+        ddla::transport_block<Backend, T>(
             sData_b, transb,
             m_b, n_b,
-            d_B, g_ib, g_jb, array_descB,
-            d_B_temp[temp_buffer]
-        );
+            B, g_ib, g_jb, descB,
+            d_B_temp[temp_buffer]);
     };
+
     get_data(k_s);
     bool first_gemm = true;
-    for(k_s=0; k_s<k; k_s+=nb){
-        DEVICE_CHECK(deviceStreamSynchronize(stream_data));
-        DEVICE_CHECK(deviceStreamSynchronize(stream));
-        if(m_loc_C > 0 && n_loc_C > 0){
-            const T gemm_beta = first_gemm ? beta : (T)1.0;
-            BLAS_CHECK(deblasGemm(
-                blasH, opA, DEBLAS_OP_N,
+    for (k_s = 0; k_s < k; k_s += nb) {
+        if constexpr (Backend == DdlaBackend::CPU) {
+            // No-op: CPU BLAS calls are synchronous and every MPI call in
+            // transport_block<DdlaBackend::CPU> is blocking, so there is no
+            // in-flight work left to wait on here.
+        } else {
+            RUNTIME_CHECK<Backend>(runtimeStreamSynchronize<Backend>(h->stream));
+            RUNTIME_CHECK<Backend>(runtimeStreamSynchronize<Backend>(h->stream_data));
+        }
+        if (m_loc_C > 0 && n_loc_C > 0) {
+            const T gemm_beta = first_gemm ? beta : static_cast<T>(1.0);
+            ddla::gemm<Backend>(
+                h, transa, 'N',
                 m_loc_C, n_loc_C, kb,
                 alpha,
-                d_A_temp[temp_buffer], transa=='N'?m_loc_C:kb,
+                d_A_temp[temp_buffer], transa == 'N' ? static_cast<int>(m_loc_C) : kb,
                 d_B_temp[temp_buffer], kb,
                 gemm_beta,
-                d_C, lldC
-            ));
+                C, lldC);
             first_gemm = false;
         }
         temp_buffer = (temp_buffer + 1) % buffer_max;
         get_data(k_s + nb);
     }
-    DEVICE_CHECK(deviceStreamSynchronize(stream));
-    DEVICE_CHECK(deviceStreamSynchronize(stream_data));
-    for(int i=0;i<buffer_max;i++){
-        DEVICE_CHECK(deviceFreeAsync(d_A_temp[i], stream_data));
-        DEVICE_CHECK(deviceFreeAsync(d_B_temp[i], stream_data));
+    if constexpr (Backend == DdlaBackend::CPU) {
+        // No-op: CPU BLAS calls are synchronous and every MPI call in
+        // transport_block<DdlaBackend::CPU> is blocking, so there is no
+        // in-flight work left to wait on here.
+    } else {
+        RUNTIME_CHECK<Backend>(runtimeStreamSynchronize<Backend>(h->stream));
+        RUNTIME_CHECK<Backend>(runtimeStreamSynchronize<Backend>(h->stream_data));
     }
-    return;
+    for (int i = 0; i < buffer_max; i++) {
+        RUNTIME_CHECK<Backend>(runtimeFree<Backend>(d_A_temp[i]));
+        RUNTIME_CHECK<Backend>(runtimeFree<Backend>(d_B_temp[i]));
+    }
 }
 
-template void pgemm<float>(
-    const char& transa, const char& transb,
-    const int& m, const int& n, const int& k,
-    const float& alpha,
-    const float* d_A, const DdlaDesc& array_descA,
-    const float* d_B, const DdlaDesc& array_descB,
-    const float& beta,
-    float* d_C, const DdlaDesc& array_descC
-);
+// ---------------------------------------------------------------------------
+// Explicit instantiations
+// ---------------------------------------------------------------------------
+#define INSTANTIATE_PGEMM(BACKEND, TYPE)                                     \
+    template void pgemm<BACKEND, TYPE>(                              \
+        const char&, const char&, const int&, const int&, const int&,          \
+        const TYPE&, const TYPE*, const DdlaDesc&,                            \
+        const TYPE*, const DdlaDesc&,                                         \
+        const TYPE&, TYPE*, const DdlaDesc&)
 
-template void pgemm<double>(
-    const char& transa, const char& transb,
-    const int& m, const int& n, const int& k,
-    const double& alpha,
-    const double* d_A, const DdlaDesc& array_descA,
-    const double* d_B, const DdlaDesc& array_descB,
-    const double& beta,
-    double* d_C, const DdlaDesc& array_descC
-);
+#if DDLA_HAS_CPU
+INSTANTIATE_PGEMM(DdlaBackend::CPU, float);
+INSTANTIATE_PGEMM(DdlaBackend::CPU, double);
+INSTANTIATE_PGEMM(DdlaBackend::CPU, std::complex<float>);
+INSTANTIATE_PGEMM(DdlaBackend::CPU, std::complex<double>);
+#endif
 
-template void pgemm<std::complex<float>>(
-    const char& transa, const char& transb,
-    const int& m, const int& n, const int& k,
-    const std::complex<float>& alpha,
-    const std::complex<float>* d_A, const DdlaDesc& array_descA,
-    const std::complex<float>* d_B, const DdlaDesc& array_descB,
-    const std::complex<float>& beta,
-    std::complex<float>* d_C, const DdlaDesc& array_descC
-);
+#if DDLA_HAS_GPU
+INSTANTIATE_PGEMM(DdlaBackend::GPU, float);
+INSTANTIATE_PGEMM(DdlaBackend::GPU, double);
+INSTANTIATE_PGEMM(DdlaBackend::GPU, std::complex<float>);
+INSTANTIATE_PGEMM(DdlaBackend::GPU, std::complex<double>);
+#endif
 
-template void pgemm<std::complex<double>>(
-    const char& transa, const char& transb,
-    const int& m, const int& n, const int& k,
-    const std::complex<double>& alpha,
-    const std::complex<double>* d_A, const DdlaDesc& array_descA,
-    const std::complex<double>* d_B, const DdlaDesc& array_descB,
-    const std::complex<double>& beta,
-    std::complex<double>* d_C, const DdlaDesc& array_descC
-);
+#undef INSTANTIATE_PGEMM
 
-
-}
+} // namespace ddla

@@ -129,7 +129,7 @@ inline deblasStatus_t deblasLaswp(
 
     int n_pivots = k2 - k1 + 1;
     std::vector<int> host_ipiv(n_pivots);
-    DEVICE_CHECK(deviceMemcpy(host_ipiv.data(), ipiv + (k1 - 1) * incx, n_pivots * sizeof(int), deviceMemcpyDeviceToHost));
+    RUNTIME_CHECK(runtimeMemcpy(host_ipiv.data(), ipiv + (k1 - 1) * incx, n_pivots * sizeof(int), runtimeMemcpyDeviceToHost));
 
     deblasStatus_t status = DEBLAS_STATUS_SUCCESS;
     for (int i = 0; i < n_pivots; ++i) {

@@ -2,6 +2,7 @@
 #define GERU_H
 
 #include "ddla_connector.h"
+#include "ddla_handle_t.h"
 
 namespace ddla{
 
@@ -44,6 +45,18 @@ inline deblasStatus_t deblasGeru(deblasHandle_t handle, int m, int n, const std:
     throw std::runtime_error("ENABLE CUDA or ENABLE HIP not enable\n");
 #endif
 }
+
+/**
+ * @brief Backend-neutral BLAS Level-2 geru: A := alpha * x * y^T + A
+ * (unconjugated outer product).
+ *
+ * CPU specializations consume host pointers and run a plain vendor-neutral
+ * host loop; GPU specializations consume device pointers and call
+ * cuBLAS/hipBLAS via deblasGeru.
+ */
+template <DdlaBackend Backend = default_backend_v, typename T>
+void geru(const DdlaHandle_t& handle, int m, int n, const T& alpha,
+          const T* x, int incx, const T* y, int incy, T* A, int lda);
 
 } // namespace ddla
 

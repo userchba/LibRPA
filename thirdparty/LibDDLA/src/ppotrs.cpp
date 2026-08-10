@@ -1,7 +1,8 @@
 #include <ddla/ddla.h>
 #include <cassert>
 #include <vector>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
 namespace ddla{
 
 template <typename T>
@@ -13,27 +14,45 @@ void ppotrs(
     bool is_nega, int location
 )
 {
-    assert(location == -1);
-    assert(trans == 'N');
-    assert(side == 'L');
+    DdlaHandle_t ddla_handle = array_descA.ddla_handle();
+    detail::require_gpu_backend(ddla_handle, "ppotrs");
+    // A is Hermitian, so op(A) == A for both trans='N' and trans='C'; the
+    // solve path is identical.  trans='T' would require conjugating B and is
+    // not supported.
+    assert(trans == 'N' || trans == 'C');
+    assert(side == 'L' || side == 'R');
     assert(uplo == 'L' || uplo == 'U');
-    const char first_trans = (uplo == 'L') ? 'N' : 'C';
-    const char second_trans = (uplo == 'L') ? 'C' : 'N';
-    double start_time = MPI_Wtime();
-    // if(is_nega){
-    //     int i_loc = array_descA.indx_g2l_r(n - 1);
-    //     int j_loc = array_descA.indx_g2l_c(n - 1);
-    //     if(i_loc >= 0 && j_loc >= 0){
-    //         DdlaHandle_t ddla_handle = array_descA.ddla_handle();
-    //         DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
-    //         T correction;
-    //         DEVICE_CHECK(deviceMemcpy(&correction, d_A + i_loc + j_loc * array_descA.lld(), sizeof(T), deviceMemcpyDeviceToHost));
-    //         correction = -correction;
-    //         DEVICE_CHECK(deviceMemcpy(d_A + i_loc + j_loc * array_descA.lld(), &correction, sizeof(T), deviceMemcpyHostToDevice));
-    //     }
-    // }
+
+    // Head correction: when ppotrf was called with is_head=true and a
+    // location != -1 (and != n), it relocated the head element to the last
+    // global index by an in-place symmetric permutation of A.  The same
+    // permutation must be applied to B on the side of the solve -- rows of B
+    // for side='L' (B is n x nrhs), columns of B for side='R' (B is
+    // nrhs x n) -- before the solve and again after (self-inverse), so X
+    // comes back in the caller's original ordering.  This keeps direct
+    // ppotrf+ppotrs head-correction users correct without external pswap
+    // bookkeeping; pposv relies on it too.
+    const bool needs_permute = (location != -1 && location != n);
+    if(needs_permute){
+        if(side == 'L')
+            pswap(nrhs, d_B, location, 1, array_descB, array_descB.m(),
+                        d_B, n,        1, array_descB, array_descB.m());
+        else
+            pswap(array_descB.m(), d_B, 1, location, array_descB, 1,
+                        d_B, 1, n,        array_descB, 1);
+    }
+
+    // Solve op(A)*X=B (side='L') or X*op(A)=B (side='R') with the Cholesky
+    // factor: for uplo='L', A = L*L^H.  Left solve applies L then L^H; right
+    // solve applies L^H then L (the product order of the solves reverses).
+    const bool left = (side == 'L');
+    const char first_trans = (left == (uplo == 'L')) ? 'N' : 'C';
+    const char second_trans = (left == (uplo == 'L')) ? 'C' : 'N';
+    const int b_rows = left ? n : nrhs;
+    const int b_cols = left ? nrhs : n;
+
     ptrtrs(
-        side, uplo, first_trans, 'N', n, nrhs,
+        side, uplo, first_trans, 'N', b_rows, b_cols,
         d_A, array_descA,
         d_B, array_descB
     );
@@ -41,20 +60,44 @@ void ppotrs(
         int i_loc = array_descA.indx_g2l_r(n - 1);
         int j_loc = array_descA.indx_g2l_c(n - 1);
         if(i_loc >= 0 && j_loc >= 0){
-            DdlaHandle_t ddla_handle = array_descA.ddla_handle();
-            DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+            RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
             T correction;
-            DEVICE_CHECK(deviceMemcpy(&correction, d_A + i_loc + j_loc * array_descA.lld(), sizeof(T), deviceMemcpyDeviceToHost));
+            RUNTIME_CHECK(runtimeMemcpy(&correction, d_A + i_loc + j_loc * array_descA.lld(), sizeof(T), runtimeMemcpyDeviceToHost));
             correction = -correction;
-            DEVICE_CHECK(deviceMemcpy(d_A + i_loc + j_loc * array_descA.lld(), &correction, sizeof(T), deviceMemcpyHostToDevice));
+            RUNTIME_CHECK(runtimeMemcpy(d_A + i_loc + j_loc * array_descA.lld(), &correction, sizeof(T), runtimeMemcpyHostToDevice));
         }
     }
     ptrtrs(
-        side, uplo, second_trans, 'N', n, nrhs,
+        side, uplo, second_trans, 'N', b_rows, b_cols,
         d_A, array_descA,
         d_B, array_descB
     );
+
+    if(needs_permute){
+        if(side == 'L')
+            pswap(nrhs, d_B, location, 1, array_descB, array_descB.m(),
+                        d_B, n,        1, array_descB, array_descB.m());
+        else
+            pswap(array_descB.m(), d_B, 1, location, array_descB, 1,
+                        d_B, 1, n,        array_descB, 1);
+    }
 }
+
+template void ppotrs<float>(
+    const char& side, const char& uplo, const char& trans,
+    const int& n, const int& nrhs,
+    float* d_A, const DdlaDesc& array_descA,
+    float* d_B, const DdlaDesc& array_descB,
+    bool is_nega, int location
+);
+
+template void ppotrs<double>(
+    const char& side, const char& uplo, const char& trans,
+    const int& n, const int& nrhs,
+    double* d_A, const DdlaDesc& array_descA,
+    double* d_B, const DdlaDesc& array_descB,
+    bool is_nega, int location
+);
 
 template void ppotrs<std::complex<double>>(
     const char& side, const char& uplo, const char& trans,

@@ -1,6 +1,7 @@
 #include <ddla/ddla.h>
 #include <cassert>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
 
 namespace ddla {
 
@@ -21,37 +22,38 @@ namespace ddla {
  */
 template <typename T>
 void pgesv_nopiv(
-    const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     T* d_A, const DdlaDesc& array_descA,
     T* d_B, const DdlaDesc& array_descB
 )
 {
+    DdlaHandle_t ddla_handle = array_descA.ddla_handle();
+    detail::require_gpu_backend(ddla_handle, "pgesv_nopiv");
     int info = 1;
     pgetrf_nopiv(n, n, d_A, array_descA, info);
     if (info != 0) {
-        printf("Error in pgetrf_nopiv, info = %d\n", info);
-        throw std::runtime_error("info != 0\n");
+        throw std::runtime_error("pgesv_nopiv: pgetrf_nopiv returned info = " + std::to_string(info));
     }
-    pgetrs_nopiv('N', n, nrhs, d_A, array_descA, d_B, array_descB);
+    pgetrs_nopiv(side, trans, n, nrhs, d_A, array_descA, d_B, array_descB);
 }
 
 template void pgesv_nopiv<float>(
-    const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     float* d_A, const DdlaDesc& array_descA,
     float* d_B, const DdlaDesc& array_descB
 );
 template void pgesv_nopiv<double>(
-    const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     double* d_A, const DdlaDesc& array_descA,
     double* d_B, const DdlaDesc& array_descB
 );
 template void pgesv_nopiv<std::complex<float>>(
-    const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     std::complex<float>* d_A, const DdlaDesc& array_descA,
     std::complex<float>* d_B, const DdlaDesc& array_descB
 );
 template void pgesv_nopiv<std::complex<double>>(
-    const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     std::complex<double>* d_A, const DdlaDesc& array_descA,
     std::complex<double>* d_B, const DdlaDesc& array_descB
 );

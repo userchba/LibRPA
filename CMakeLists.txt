@@ -66,7 +66,7 @@ set(_BUNDLED_GREENX_COMMIT_HASH  "c90d131")
 set(_BUNDLED_LIBRI_COMMIT_HASH   "e978e96")
 set(_BUNDLED_LIBRI_GPU_COMMIT_HASH "2f5e23e")
 set(_BUNDLED_LIBCOMM_COMMIT_HASH "12457e7")
-set(_BUNDLED_LIBDDLA_COMMIT_HASH "3ebe3f9f")
+set(_BUNDLED_LIBDDLA_COMMIT_HASH "33c29e0")
 
 # Add cmake load files
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -261,6 +261,13 @@ elseif(LIBRPA_USE_BUNDLED_ELPA)
   add_compile_definitions("LIBRPA_USE_ELPA")
   add_subdirectory(thirdparty/ELPA)
   set(LIBRPA_ELPA_TARGET elpa)
+  # Unlike the external-ELPA branch above, this was never appended to
+  # math_libs, so driver/test executables (which link math_libs, not
+  # rpa_lib's PRIVATE ELPA dependency directly) never saw ELPA's include
+  # directory even though LIBRPA_USE_ELPA is defined for them too --
+  # `#include <elpa/elpa.h>` in base_blacs.h then fails to resolve outside
+  # rpa_lib's own translation units.
+  list(APPEND math_libs ${LIBRPA_ELPA_TARGET})
 endif()
 
 # Switch on LibRI functionalities, which requires Cereal, LibComm and LibRI
@@ -378,19 +385,40 @@ if(LIBRPA_USE_CUDA OR LIBRPA_USE_HIP)
   if(NOT "${LIBDDLA_PATH}" STREQUAL "")
     set(DDLA_USE_GPU_CPU_TUNNEL "EXTERNAL DEFINED OFF(CUDA default), ON(HIP default)")
     message(STATUS "Use external LibDDLA from: ${LIBDDLA_PATH}")
-    if(NOT EXISTS "${LIBDDLA_PATH}/include/ddla/ddla.h")
-      message(FATAL_ERROR "LibDDLA headers not found in ${LIBDDLA_PATH}/include")
+    # Prefer the installed CMake package: it exports ddla::ddla carrying the
+    # exact DDLA_USE_{CUDA,HIP,CPU}/DDLA_USE_CCL/DDLA_USE_GPU_CPU_TUNNEL
+    # compile definitions the library was actually built with, so a mismatch
+    # between LibRPA's macros and the library's own is structurally
+    # impossible. Fall back to the manual find_library probe for LibDDLA
+    # installs that predate LibDDLAConfig.cmake.
+    find_package(LibDDLA QUIET CONFIG
+      HINTS "${LIBDDLA_PATH}" "${LIBDDLA_PATH}/lib/cmake/LibDDLA")
+    if(TARGET ddla::ddla)
+      message(STATUS "Found LibDDLA CMake package under ${LIBDDLA_PATH}; using ddla::ddla")
+      set(LIBRPA_DDLA_TARGET ddla::ddla)
+    else()
+      message(STATUS "No LibDDLAConfig.cmake under ${LIBDDLA_PATH}; falling back to manual probe")
+      if(NOT EXISTS "${LIBDDLA_PATH}/include/ddla/ddla.h")
+        message(FATAL_ERROR "LibDDLA headers not found in ${LIBDDLA_PATH}/include")
+      endif()
+      if(NOT EXISTS "${LIBDDLA_PATH}/include/ddla/ddla_config.h")
+        message(FATAL_ERROR
+          "LibDDLA ${LIBDDLA_PATH}/include/ddla/ddla_config.h not found. This "
+          "header is generated at LibDDLA build time and installed by a "
+          "separate rule from the rest of include/ddla; reinstall LibDDLA or "
+          "point LIBDDLA_PATH at a complete install prefix")
+      endif()
+      find_library(LIBDDLA_LIB ddla PATHS ${LIBDDLA_PATH}/lib ${LIBDDLA_PATH}/lib64 NO_DEFAULT_PATH)
+      if(NOT LIBDDLA_LIB)
+        message(FATAL_ERROR "libddla not found in ${LIBDDLA_PATH}/lib or ${LIBDDLA_PATH}/lib64")
+      endif()
+      add_library(LibDDLA::ddla SHARED IMPORTED GLOBAL)
+      set_target_properties(LibDDLA::ddla PROPERTIES
+        IMPORTED_LOCATION "${LIBDDLA_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${LIBDDLA_PATH}/include"
+      )
+      set(LIBRPA_DDLA_TARGET LibDDLA::ddla)
     endif()
-    find_library(LIBDDLA_LIB ddla PATHS ${LIBDDLA_PATH}/lib ${LIBDDLA_PATH}/lib64 NO_DEFAULT_PATH)
-    if(NOT LIBDDLA_LIB)
-      message(FATAL_ERROR "libddla not found in ${LIBDDLA_PATH}/lib or ${LIBDDLA_PATH}/lib64")
-    endif()
-    add_library(LibDDLA::ddla SHARED IMPORTED GLOBAL)
-    set_target_properties(LibDDLA::ddla PROPERTIES
-      IMPORTED_LOCATION "${LIBDDLA_LIB}"
-      INTERFACE_INCLUDE_DIRECTORIES "${LIBDDLA_PATH}/include"
-    )
-    set(LIBRPA_DDLA_TARGET LibDDLA::ddla)
   else()
     if(LIBRPA_USE_HIP)
       set(DDLA_USE_GPU_CPU_TUNNEL ON)

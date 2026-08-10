@@ -2,6 +2,7 @@
 #define IAMAX_H
 
 #include "ddla_connector.h"
+#include "ddla_handle_t.h"
 
 namespace ddla{
 
@@ -46,7 +47,18 @@ inline deblasStatus_t deblasIamax(deblasHandle_t handle, int n, const std::compl
 #endif
 }
 
-}
+/**
+ * @brief Backend-neutral BLAS Level-1 iamax: 1-based index of the element
+ * with largest magnitude (|Re| + |Im| for complex, matching cuBLAS/hipBLAS
+ * iamax semantics).
+ *
+ * CPU specializations consume host pointers and run a plain vendor-neutral
+ * host loop; GPU specializations consume device pointers and call
+ * cuBLAS/hipBLAS via deblasIamax.
+ */
+template <DdlaBackend Backend = default_backend_v, typename T>
+void iamax(const DdlaHandle_t& handle, int n, const T* x, int incx, int& result);
 
+} // namespace ddla
 
 #endif // IAMAX_H

@@ -5,8 +5,10 @@ using namespace api_grid_test;
 void check_pswap(const ddla::DdlaHandle_t& handle, const Shape& base)
 {
     const int nb = base.nb;
-    const int m = round_up_for_grid(base.m, nb, handle->nprows_);
-    const int n = round_up_for_grid(base.n, nb, handle->npcols_);
+    int nprows = 0, npcols = 0;
+    ddla_get_grid_dims(handle, nprows, npcols);
+    const int m = round_up_for_grid(base.m, nb, nprows);
+    const int n = round_up_for_grid(base.n, nb, npcols);
     ddla::DdlaDesc desc(handle);
     desc.init(m, n, nb, nb, 0, 0);
     auto base_value = [](int i, int j){ return Complex(10.0 * i + j, -0.5 * i + 0.25 * j); };
@@ -14,7 +16,7 @@ void check_pswap(const ddla::DdlaHandle_t& handle, const Shape& base)
     auto h_A = make_local<Complex>(desc, base_value);
     DeviceBuffer<Complex> d_A(handle, h_A.size());
     upload(handle, d_A.ptr, h_A);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
     ddla::pswap(n, d_A.ptr, 1, 1, desc, desc.m(), d_A.ptr, m, 1, desc, desc.m());
     auto row_out = download(handle, d_A.ptr, h_A.size());
     const double row_err = local_max_error<Complex>(desc, row_out, [&](int i, int j){
@@ -26,7 +28,7 @@ void check_pswap(const ddla::DdlaHandle_t& handle, const Shape& base)
     require_close(handle, "pswap(row)", row_err, 1e-12);
 
     upload(handle, d_A.ptr, h_A);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
     ddla::pswap(m, d_A.ptr, 1, 1, desc, 1, d_A.ptr, 1, n, desc, 1);
     auto col_out = download(handle, d_A.ptr, h_A.size());
     const double col_err = local_max_error<Complex>(desc, col_out, [&](int i, int j){

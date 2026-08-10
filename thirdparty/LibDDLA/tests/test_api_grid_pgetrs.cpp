@@ -7,25 +7,41 @@ void check_pgetrs(const ddla::DdlaHandle_t& handle, const Shape& base)
     const int nb = base.nb;
     const int n = square_size(handle, base);
     const int nrhs = nrhs_size(base);
-    ddla::DdlaDesc descA(handle), descB(handle);
+    ddla::DdlaDesc descA(handle);
     descA.init(n, n, nb, nb, 0, 0);
-    descB.init(n, nrhs, nb, nb, 0, 0);
 
     auto h_A = make_local<Complex>(descA, [=](int i, int j){ return dominant_value(i, j, n); });
-    auto h_B = build_rhs(descB, n, dominant_value, n);
 
-    DeviceBuffer<Complex> d_A(handle, h_A.size());
-    DeviceBuffer<Complex> d_B(handle, h_B.size());
-    upload(handle, d_A.ptr, h_A);
-    upload(handle, d_B.ptr, h_B);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    auto run_case = [&](char side, char trans){
+        const std::string name = std::string("pgetrs(") + side + "," + trans + ")";
+        // side='L': B is n x nrhs, solve op(A)*X = B;
+        // side='R': B is nrhs x n, solve X*op(A) = B.
+        const int b_rows = (side == 'L') ? n : nrhs;
+        const int b_cols = (side == 'L') ? nrhs : n;
+        ddla::DdlaDesc descB(handle);
+        descB.init(b_rows, b_cols, nb, nb, 0, 0);
+        auto h_B = build_rhs_side(descB, n, side, trans, dominant_value, n);
 
-    std::vector<int> ipiv(descA.m_loc());
-    int info = -1;
-    ddla::pgetrf(n, n, d_A.ptr, descA, ipiv.data(), info);
-    if(info != 0) MPI_Abort(handle->comm, 1);
-    ddla::pgetrs('N', n, nrhs, d_A.ptr, descA, ipiv.data(), d_B.ptr, descB);
-    check_solution(handle, descB, d_B.ptr, h_B.size(), "pgetrs", 5e-9);
+        DeviceBuffer<Complex> d_A(handle, h_A.size());
+        DeviceBuffer<Complex> d_B(handle, h_B.size());
+        upload(handle, d_A.ptr, h_A);
+        upload(handle, d_B.ptr, h_B);
+        check_ddla_sync(handle);
+
+        std::vector<int> ipiv(descA.m_loc());
+        int info = -1;
+        ddla::pgetrf(n, n, d_A.ptr, descA, ipiv.data(), info);
+        if(info != 0) MPI_Abort(ddla_get_communicator(handle), 1);
+        ddla::pgetrs(side, trans, n, nrhs, d_A.ptr, descA, ipiv.data(), d_B.ptr, descB);
+        check_solution(handle, descB, d_B.ptr, h_B.size(), name, 5e-9);
+    };
+
+    run_case('L', 'N');
+    run_case('L', 'T');
+    run_case('L', 'C');
+    run_case('R', 'N');
+    run_case('R', 'T');
+    run_case('R', 'C');
 }
 
 int main(int argc, char** argv)

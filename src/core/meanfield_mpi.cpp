@@ -305,30 +305,30 @@ static void pgemm_wfc_scaled_wfc_h(const int n_aos, const int n_cols,
     const size_t alloc_size_ab = std::max<size_t>(size_ab, 1);
     const size_t alloc_size_c = std::max<size_t>(size_c, 1);
     cplxdb *d_A = nullptr, *d_B = nullptr, *d_C = nullptr;
-    DEVICE_CHECK(deviceMallocAsync((void**)&d_A, alloc_size_ab * sizeof(cplxdb), handle->stream));
-    DEVICE_CHECK(deviceMallocAsync((void**)&d_B, alloc_size_ab * sizeof(cplxdb), handle->stream));
-    DEVICE_CHECK(deviceMallocAsync((void**)&d_C, alloc_size_c * sizeof(cplxdb), handle->stream));
+    RUNTIME_CHECK(runtimeMallocAsync((void**)&d_A, alloc_size_ab * sizeof(cplxdb), DeviceConnector::stream(handle)));
+    RUNTIME_CHECK(runtimeMallocAsync((void**)&d_B, alloc_size_ab * sizeof(cplxdb), DeviceConnector::stream(handle)));
+    RUNTIME_CHECK(runtimeMallocAsync((void**)&d_C, alloc_size_c * sizeof(cplxdb), DeviceConnector::stream(handle)));
     if (size_ab > 0)
     {
-        DEVICE_CHECK(deviceMemcpyAsync(d_A, wfc_bra,
+        RUNTIME_CHECK(runtimeMemcpyAsync(d_A, wfc_bra,
                                        size_ab * sizeof(cplxdb),
-                                       deviceMemcpyHostToDevice, handle->stream));
-        DEVICE_CHECK(deviceMemcpyAsync(d_B, scaled_wfc_ket,
+                                       runtimeMemcpyHostToDevice, DeviceConnector::stream(handle)));
+        RUNTIME_CHECK(runtimeMemcpyAsync(d_B, scaled_wfc_ket,
                                        size_ab * sizeof(cplxdb),
-                                       deviceMemcpyHostToDevice, handle->stream));
+                                       runtimeMemcpyHostToDevice, DeviceConnector::stream(handle)));
     }
     ddla::pgemm('N', 'C', n_aos, n_aos, n_cols, C_ONE,
                 d_A, workspace.desc_wfc_compute.ddla_desc(),
                 d_B, workspace.desc_wfc_compute.ddla_desc(),
                 C_ZERO, d_C, workspace.desc_out_opt.ddla_desc());
     if (size_c > 0)
-        DEVICE_CHECK(deviceMemcpyAsync(out_opt, d_C,
+        RUNTIME_CHECK(runtimeMemcpyAsync(out_opt, d_C,
                                        size_c * sizeof(cplxdb),
-                                       deviceMemcpyDeviceToHost, handle->stream));
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_A, handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_B, handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_C, handle->stream));
+                                       runtimeMemcpyDeviceToHost, DeviceConnector::stream(handle)));
+    RUNTIME_CHECK(runtimeStreamSynchronize(DeviceConnector::stream(handle)));
+    RUNTIME_CHECK(runtimeFreeAsync(d_A, DeviceConnector::stream(handle)));
+    RUNTIME_CHECK(runtimeFreeAsync(d_B, DeviceConnector::stream(handle)));
+    RUNTIME_CHECK(runtimeFreeAsync(d_C, DeviceConnector::stream(handle)));
 #else
     global::profiler.start("pgemm", LIBRPA_VERBOSE_DEBUG);
     ScalapackConnector::pgemm_f('N', 'C', n_aos, n_aos, n_cols, C_ONE,

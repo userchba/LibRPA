@@ -8,7 +8,8 @@
 #include <type_traits>
 
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
 #include <ddla/herk.h>
 #include <ddla/potrf.h>
 #include <ddla/syrk.h>
@@ -81,8 +82,8 @@ void potrf_bottom_right_block(
     assert(d_info != nullptr);
     assert(lda >= n);
 
-    const deviceStream_t stream = handle->stream;
-    DEVICE_CHECK(deviceMemsetAsync(d_info, 0, sizeof(int), stream));
+    const runtimeStream_t stream = handle->stream;
+    RUNTIME_CHECK(runtimeMemsetAsync(d_info, 0, sizeof(int), stream));
     const deblasFillMode_t solver_uplo = uplo == 'U'
         ? DEBLAS_FILL_MODE_LOWER
         : DEBLAS_FILL_MODE_UPPER;
@@ -96,10 +97,10 @@ void potrf_bottom_right_block(
         n, d_work, n, d_info));
 
     int solver_info = 0;
-    DEVICE_CHECK(deviceMemcpyAsync(
+    RUNTIME_CHECK(runtimeMemcpyAsync(
         &solver_info, d_info, sizeof(int),
-        deviceMemcpyDeviceToHost, stream));
-    DEVICE_CHECK(deviceStreamSynchronize(stream));
+        runtimeMemcpyDeviceToHost, stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(stream));
     if(solver_info != 0){
         info = global_offset + n - solver_info + 1;
         return;
@@ -132,6 +133,7 @@ void potrf_bottom_right(
     const char& uplo, const int& n, T* d_A, const int& lda,
     int& info, const DdlaHandle_t& handle)
 {
+    detail::require_gpu_backend(handle, "potrf_bottom_right");
     assert(uplo == 'U' || uplo == 'L');
     assert(n >= 0);
     assert(handle != nullptr);
@@ -144,16 +146,16 @@ void potrf_bottom_right(
     assert(d_A != nullptr);
     assert(lda >= n);
 
-    const deviceStream_t stream = handle->stream;
+    const runtimeStream_t stream = handle->stream;
     const deblasHandle_t blas_handle = handle->blasH;
     T* d_work = nullptr;
     int* d_info = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(
+    RUNTIME_CHECK(runtimeMallocAsync(
         reinterpret_cast<void**>(&d_work),
         static_cast<std::size_t>(detail::kBlockSize)
             * detail::kBlockSize * sizeof(T),
         stream));
-    DEVICE_CHECK(deviceMallocAsync(
+    RUNTIME_CHECK(runtimeMallocAsync(
         reinterpret_cast<void**>(&d_info), sizeof(int), stream));
 
     const int last_block_start =
@@ -213,9 +215,9 @@ void potrf_bottom_right(
             d_A);
     }
 
-    DEVICE_CHECK(deviceFreeAsync(d_work, stream));
-    DEVICE_CHECK(deviceFreeAsync(d_info, stream));
-    DEVICE_CHECK(deviceStreamSynchronize(stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_work, stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_info, stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(stream));
 }
 
 template void potrf_bottom_right<float>(

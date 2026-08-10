@@ -36,12 +36,22 @@ struct Shape {
 struct TestOptions {
     std::vector<std::pair<int, int>> grids;
     std::vector<Shape> shapes;
+    int irsrc = 0;
+    int icsrc = 0;
 };
+
+// Populated by run_grid_test from --src IR IC (default 0,0). Only the
+// pgemm nonzero-irsrc/icsrc probe currently reads these; every other
+// api_grid test keeps using descriptor irsrc=icsrc=0 as before.
+inline int g_test_irsrc = 0;
+inline int g_test_icsrc = 0;
 
 inline std::string grid_name(const ddla::DdlaHandle_t& handle)
 {
+    int nprows = 0, npcols = 0;
+    ddla_get_grid_dims(handle, nprows, npcols);
     std::ostringstream os;
-    os << handle->nprows_ << "x" << handle->npcols_;
+    os << nprows << "x" << npcols;
     return os.str();
 }
 
@@ -57,7 +67,9 @@ inline int round_up_for_grid(int value, int block, int procs)
 
 inline int square_size(const ddla::DdlaHandle_t& handle, const Shape& base)
 {
-    return round_up_for_grid(base.m, base.nb, std::max(handle->nprows_, handle->npcols_));
+    int nprows = 0, npcols = 0;
+    ddla_get_grid_dims(handle, nprows, npcols);
+    return round_up_for_grid(base.m, base.nb, std::max(nprows, npcols));
 }
 
 inline int nrhs_size(const Shape& base, int upper = 4)
@@ -75,6 +87,19 @@ inline bool parse_positive_int(const std::string& text, int& value)
         if(parsed > std::numeric_limits<int>::max()) return false;
     }
     if(parsed <= 0) return false;
+    value = static_cast<int>(parsed);
+    return true;
+}
+
+inline bool parse_nonneg_int(const std::string& text, int& value)
+{
+    if(text.empty()) return false;
+    long long parsed = 0;
+    for(char ch : text){
+        if(!std::isdigit(static_cast<unsigned char>(ch))) return false;
+        parsed = parsed * 10 + (ch - '0');
+        if(parsed > std::numeric_limits<int>::max()) return false;
+    }
     value = static_cast<int>(parsed);
     return true;
 }
@@ -104,9 +129,12 @@ inline bool parse_options(int argc, char** argv, int nprocs, TestOptions& option
 {
     bool grid_set = false;
     bool size_set = false;
+    bool src_set = false;
     int requested_grid_rows = 0;
     int requested_grid_cols = 0;
     int requested_size = 0;
+    int requested_irsrc = 0;
+    int requested_icsrc = 0;
 
     for(int i = 1; i < argc; ++i){
         std::string arg(argv[i]);
@@ -160,6 +188,23 @@ inline bool parse_options(int argc, char** argv, int nprocs, TestOptions& option
                 error = "invalid --size value: " + size_text;
                 return false;
             }
+        }else if(arg == "--src"){
+            if(i + 2 >= argc){
+                error = "--src requires two non-negative integers: IR IC";
+                return false;
+            }
+            if(src_set){
+                error = "--src was provided more than once";
+                return false;
+            }
+            src_set = true;
+            const std::string ir_text(argv[++i]);
+            const std::string ic_text(argv[++i]);
+            if(!parse_nonneg_int(ir_text, requested_irsrc) ||
+               !parse_nonneg_int(ic_text, requested_icsrc)){
+                error = "invalid --src values: " + ir_text + " " + ic_text;
+                return false;
+            }
         }else if(!arg.empty() && arg[0] == '-'){
             error = "unknown option: " + arg;
             return false;
@@ -205,7 +250,57 @@ inline bool parse_options(int argc, char** argv, int nprocs, TestOptions& option
             {17, 10, 14, 4},
         };
     }
+
+    options.irsrc = requested_irsrc;
+    options.icsrc = requested_icsrc;
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Fail-fast wrappers for ddla_* memory/synchronization calls
+// ---------------------------------------------------------------------------
+inline void check_ddla_malloc(void** ptr, size_t bytes,
+                              const ddla::DdlaHandle_t& handle)
+{
+    int rc = ddla_malloc(ptr, bytes, handle);
+    if (rc != 0) {
+        std::cerr << "ddla_malloc failed (rc=" << rc << ")" << std::endl;
+        MPI_Abort(ddla_get_communicator(handle), 1);
+    }
+    if (bytes > 0 && *ptr == nullptr) {
+        std::cerr << "ddla_malloc returned null for nonzero size" << std::endl;
+        MPI_Abort(ddla_get_communicator(handle), 1);
+    }
+}
+
+inline void check_ddla_free(void* ptr, const ddla::DdlaHandle_t& handle)
+{
+    if (ptr == nullptr) return;
+    int rc = ddla_free(ptr, handle);
+    if (rc != 0) {
+        std::cerr << "ddla_free failed (rc=" << rc << ")" << std::endl;
+        MPI_Abort(ddla_get_communicator(handle), 1);
+    }
+}
+
+inline void check_ddla_memcpy(void* dst, const void* src, size_t bytes,
+                              ddla::DdlaMemoryCopyKind kind,
+                              const ddla::DdlaHandle_t& handle)
+{
+    int rc = ddla_memcpy(dst, src, bytes, kind, handle);
+    if (rc != 0) {
+        std::cerr << "ddla_memcpy failed (rc=" << rc << ")" << std::endl;
+        MPI_Abort(ddla_get_communicator(handle), 1);
+    }
+}
+
+inline void check_ddla_sync(const ddla::DdlaHandle_t& handle)
+{
+    int rc = ddla_synchronize(handle);
+    if (rc != 0) {
+        std::cerr << "ddla_synchronize failed (rc=" << rc << ")" << std::endl;
+        MPI_Abort(ddla_get_communicator(handle), 1);
+    }
 }
 
 template <typename T>
@@ -216,7 +311,7 @@ struct DeviceBuffer {
 
     DeviceBuffer(const ddla::DdlaHandle_t& h, size_t n) : handle(h), count(std::max<size_t>(1, n))
     {
-        DEVICE_CHECK(deviceMallocAsync(reinterpret_cast<void**>(&ptr), count * sizeof(T), handle->stream));
+        check_ddla_malloc(reinterpret_cast<void**>(&ptr), count * sizeof(T), handle);
     }
 
     DeviceBuffer(const DeviceBuffer&) = delete;
@@ -225,7 +320,7 @@ struct DeviceBuffer {
     ~DeviceBuffer()
     {
         if(ptr != nullptr){
-            DEVICE_CHECK(deviceFreeAsync(ptr, handle->stream));
+            check_ddla_free(ptr, handle);
         }
     }
 };
@@ -234,8 +329,8 @@ template <typename T>
 inline void upload(const ddla::DdlaHandle_t& handle, T* dst, const std::vector<T>& src)
 {
     if(!src.empty()){
-        DEVICE_CHECK(deviceMemcpyAsync(dst, src.data(), src.size() * sizeof(T),
-                                      deviceMemcpyHostToDevice, handle->stream));
+        check_ddla_memcpy(dst, src.data(), src.size() * sizeof(T),
+                          DdlaMemoryCopyKind::HostToDevice, handle);
     }
 }
 
@@ -244,10 +339,10 @@ inline std::vector<T> download(const ddla::DdlaHandle_t& handle, const T* src, s
 {
     std::vector<T> host(count);
     if(count > 0){
-        DEVICE_CHECK(deviceMemcpyAsync(host.data(), src, count * sizeof(T),
-                                      deviceMemcpyDeviceToHost, handle->stream));
+        check_ddla_memcpy(host.data(), src, count * sizeof(T),
+                          DdlaMemoryCopyKind::DeviceToHost, handle);
     }
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
     return host;
 }
 
@@ -277,7 +372,7 @@ inline double local_max_error(const ddla::DdlaDesc& desc, const std::vector<T>& 
         for(int iloc = 0; iloc < desc.m_loc(); ++iloc){
             const int i = desc.indx_l2g_r(iloc);
             if(i >= desc.m()) continue;
-            err = std::max(err, std::abs(local[iloc + jloc * desc.lld()] - expected(i, j)));
+            err = std::max(err, static_cast<double>(std::abs(local[iloc + jloc * desc.lld()] - expected(i, j))));
         }
     }
     return err;
@@ -287,16 +382,18 @@ inline void require_close(const ddla::DdlaHandle_t& handle, const std::string& n
                           double local_err, double tol)
 {
     double global_err = 0.0;
-    MPI_Allreduce(&local_err, &global_err, 1, MPI_DOUBLE, MPI_MAX, handle->comm);
-    if(handle->myid == 0){
+    MPI_Comm comm = ddla_get_communicator(handle);
+    MPI_Allreduce(&local_err, &global_err, 1, MPI_DOUBLE, MPI_MAX, comm);
+    int rank = ddla_get_rank(handle);
+    if(rank == 0){
         std::cout << "[grid " << grid_name(handle) << "] " << name
                   << " max_err=" << global_err << std::endl;
     }
     if(global_err > tol){
-        if(handle->myid == 0){
+        if(rank == 0){
             std::cerr << "FAIL: " << name << " exceeded tolerance " << tol << std::endl;
         }
-        MPI_Abort(handle->comm, 1);
+        MPI_Abort(comm, 1);
     }
 }
 
@@ -314,6 +411,15 @@ inline Complex dominant_value(int i, int j, int n)
         return Complex(4.0 + 0.1 * i, 0.0);
     }
     return Complex(0.015 * ((i + 2 * j) % 5 - 2), 0.01 * ((2 * i + j) % 7 - 3));
+}
+
+// Row-cycled variant of dominant_value: global row i carries the strong
+// diagonal element of row (i+1)%n, so diagonal blocks factored with partial
+// pivoting must actually swap rows (non-identity ipiv).  Exercises the pivot
+// path that a strictly diagonally dominant matrix never triggers.
+inline Complex cycled_value(int i, int j, int n)
+{
+    return dominant_value((i + 1) % n, j, n);
 }
 
 inline Complex hpd_value(int i, int j, int n)
@@ -363,6 +469,25 @@ inline std::vector<Complex> build_rhs(const ddla::DdlaDesc& descB, int n,
     });
 }
 
+// B := op(A)*X (side='L', B is n x nrhs) or B := X*op(A) (side='R',
+// B is nrhs x n), with op(A) chosen by trans via op_value.
+inline std::vector<Complex> build_rhs_side(const ddla::DdlaDesc& descB, int n,
+                                           char side, char trans,
+                                           Complex (*matrix)(int, int, int),
+                                           int tag)
+{
+    return make_local<Complex>(descB, [&](int i, int j){
+        Complex sum(0.0, 0.0);
+        for(int l = 0; l < n; ++l){
+            if(side == 'L')
+                sum += op_value(trans, n, n, i, l, matrix, tag) * x_value(l, j);
+            else
+                sum += x_value(i, l) * op_value(trans, n, n, l, j, matrix, tag);
+        }
+        return sum;
+    });
+}
+
 inline void check_solution(const ddla::DdlaHandle_t& handle, const ddla::DdlaDesc& descB,
                            const Complex* d_B, size_t count,
                            const std::string& name, double tol)
@@ -376,8 +501,11 @@ inline void check_solution(const ddla::DdlaHandle_t& handle, const ddla::DdlaDes
 
 inline bool skip_non_square_grid(const ddla::DdlaHandle_t& handle, const std::string& name)
 {
-    if(handle->nprows_ == handle->npcols_) return false;
-    if(handle->myid == 0){
+    int nprows = 0, npcols = 0;
+    ddla_get_grid_dims(handle, nprows, npcols);
+    if(nprows == npcols) return false;
+    int rank = ddla_get_rank(handle);
+    if(rank == 0){
         std::cout << "[grid " << grid_name(handle) << "] skip " << name
                   << " on non-square process grid" << std::endl;
     }
@@ -404,11 +532,15 @@ int run_grid_test(int argc, char** argv, const std::string& test_name, Body body
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
+    g_test_irsrc = options.irsrc;
+    g_test_icsrc = options.icsrc;
+
     for(auto [nprows, npcols] : options.grids){
         ddla::DdlaHandle_t handle = nullptr;
         ddla::ddla_init(handle);
         ddla::ddla_set(handle, MPI_COMM_WORLD, nprows, npcols);
-        if(handle->myid == 0){
+        int myid = ddla_get_rank(handle);
+        if(myid == 0){
             std::cout << "=== grid " << grid_name(handle) << " ===" << std::endl;
         }
 
@@ -416,7 +548,7 @@ int run_grid_test(int argc, char** argv, const std::string& test_name, Body body
             body(handle, shape);
         }
 
-        DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+        check_ddla_sync(handle);
         ddla::ddla_destroy(handle);
     }
 

@@ -1,6 +1,8 @@
 #include "base_blacs.h"
 
 #include <algorithm>
+#include <exception>
+#include <iostream>
 #include <string>
 
 #include "../interface/blacs_scalapack.h"
@@ -10,6 +12,35 @@
 
 namespace librpa_int
 {
+
+#if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
+namespace
+{
+// ddla::ddla_destroy now throws instead of exit()-ing on failure. It is
+// called from BlacsCtxtHandler::exit(), which the (implicitly noexcept)
+// destructor also calls; letting an exception escape there would call
+// std::terminate() instead of reporting a clean error. Swallow and log,
+// mirroring the "cleanup must not throw" convention already used for
+// destructors elsewhere in this class.
+void safe_ddla_destroy(ddla::DdlaHandle_t& handle)
+{
+    try
+    {
+        ddla::ddla_destroy(handle);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Warning: ddla::ddla_destroy failed during BLACS "
+                     "context cleanup: " << e.what() << std::endl;
+    }
+    catch (...)
+    {
+        std::cerr << "Warning: ddla::ddla_destroy failed during BLACS "
+                     "context cleanup with an unknown exception" << std::endl;
+    }
+}
+} // namespace
+#endif
 
 void CTXT_barrier(int ictxt, CTXT_SCOPE scope)
 {
@@ -106,7 +137,7 @@ void BlacsCtxtHandler::reset_comm()
     this->pgrid_set_ = false;
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
     if(ddla_handle != nullptr){
-        ddla::ddla_destroy(ddla_handle);
+        safe_ddla_destroy(ddla_handle);
         ddla_handle = nullptr;
     }
 #endif
@@ -124,7 +155,7 @@ void BlacsCtxtHandler::reset_comm(MPI_Comm comm_in, bool init_on_reset)
     if (init_on_reset) this->init();
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
     if(ddla_handle!=nullptr){
-        ddla::ddla_destroy(ddla_handle);
+        safe_ddla_destroy(ddla_handle);
         ddla_handle = nullptr;
     }
 #endif
@@ -187,7 +218,7 @@ void BlacsCtxtHandler::exit()
     }
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
     if(ddla_handle!=nullptr){
-        ddla::ddla_destroy(ddla_handle);
+        safe_ddla_destroy(ddla_handle);
         ddla_handle = nullptr;
     }
 #endif

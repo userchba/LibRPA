@@ -11,7 +11,7 @@
 
 #include <ddla/ddla.h>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
 #include <ddla/scal.h>
 
 using namespace ddla;
@@ -37,12 +37,12 @@ void fill_matrix(int n, const DdlaDesc& desc, Complex* d_A, const DdlaHandle_t& 
         const int iloc = desc.indx_g2l_r(i);
         const int jloc = desc.indx_g2l_c(i);
         if(iloc >= 0 && jloc >= 0){
-            DEVICE_CHECK(deviceMemcpyAsync(d_A + iloc + jloc * desc.lld(), &diag,
-                                          sizeof(Complex), deviceMemcpyHostToDevice,
+            RUNTIME_CHECK(runtimeMemcpyAsync(d_A + iloc + jloc * desc.lld(), &diag,
+                                          sizeof(Complex), runtimeMemcpyHostToDevice,
                                           handle->stream));
         }
     }
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
 }
 
 double benchmark_pgetrf(int n, const DdlaHandle_t& handle,
@@ -54,7 +54,7 @@ double benchmark_pgetrf(int n, const DdlaHandle_t& handle,
 
     const size_t nelem = static_cast<size_t>(desc.m_loc()) * desc.n_loc();
     Complex* d_A = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(reinterpret_cast<void**>(&d_A),
+    RUNTIME_CHECK(runtimeMallocAsync(reinterpret_cast<void**>(&d_A),
                                   nelem * sizeof(Complex), handle->stream));
     fill_matrix(n, desc, d_A, handle);
 
@@ -64,7 +64,7 @@ double benchmark_pgetrf(int n, const DdlaHandle_t& handle,
     MPI_Barrier(handle->comm);
     const double start = MPI_Wtime();
     pgetrf(n, n, d_A, desc, ipiv.data(), info);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
     MPI_Barrier(handle->comm);
     const double elapsed = MPI_Wtime() - start;
 
@@ -80,8 +80,8 @@ double benchmark_pgetrf(int n, const DdlaHandle_t& handle,
     double max_elapsed = 0.0;
     MPI_Reduce(&elapsed, &max_elapsed, 1, MPI_DOUBLE, MPI_MAX, 0, handle->comm);
 
-    DEVICE_CHECK(deviceFreeAsync(d_A, handle->stream));
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_A, handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
 
     if(handle->myid == 0){
         std::cout << (warmup ? "WARMUP" : "RESULT") << " n=" << n

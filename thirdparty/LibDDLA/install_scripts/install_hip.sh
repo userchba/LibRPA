@@ -7,8 +7,8 @@
 #SBATCH --gres=dcu:0
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=7
-#SBATCH --output=../log_hip
-#SBATCH --error=../err_hip
+#SBATCH --output=../libddla_hip.out
+#SBATCH --error=../libddla_hip.out
 
 ulimit -s unlimited
 ulimit -c unlimited

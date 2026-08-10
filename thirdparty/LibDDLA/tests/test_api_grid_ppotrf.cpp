@@ -19,7 +19,7 @@ void check_ppotrf(const ddla::DdlaHandle_t& handle, const Shape& base)
         auto h_tiny = make_local<Complex>(tiny_desc, [](int, int){ return Complex(4.0, 0.0); });
         DeviceBuffer<Complex> d_tiny(handle, h_tiny.size());
         upload(handle, d_tiny.ptr, h_tiny);
-        DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+        check_ddla_sync(handle);
 
         int tiny_info = -1;
         const bool tiny_is_nega = ddla::ppotrf('L', 1, d_tiny.ptr, 1, 1,
@@ -39,7 +39,7 @@ void check_ppotrf(const ddla::DdlaHandle_t& handle, const Shape& base)
         });
         DeviceBuffer<Complex> d_not_pd(handle, h_not_pd.size());
         upload(handle, d_not_pd.ptr, h_not_pd);
-        DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+        check_ddla_sync(handle);
 
         int not_pd_info = -1;
         const bool not_pd_is_nega = ddla::ppotrf('L', n, d_not_pd.ptr, 1, 1,
@@ -56,12 +56,12 @@ void check_ppotrf(const ddla::DdlaHandle_t& handle, const Shape& base)
     DeviceBuffer<Complex> d_B(handle, h_B.size());
     upload(handle, d_A.ptr, h_A);
     upload(handle, d_B.ptr, h_B);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
 
     int info = -1;
     const bool is_nega = ddla::ppotrf('L', n, d_A.ptr, 1, 1, descA, info);
-    if(info != 0 || is_nega) MPI_Abort(handle->comm, 1);
-    ddla::ppotrs('L', 'L', 'N', n, nrhs, d_A.ptr, descA, d_B.ptr, descB, is_nega, -1);
+    if(info != 0 || is_nega) MPI_Abort(ddla_get_communicator(handle), 1);
+    ddla::ppotrs('L', 'L', 'N', n, nrhs, d_A.ptr, descA, d_B.ptr, descB, is_nega);
     check_solution(handle, descB, d_B.ptr, h_B.size(), "ppotrf", 5e-9);
 }
 

@@ -6,7 +6,7 @@
 #include <complex>
 #include <ddla/ddla.h>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
 #include <ddla/ptran.h>
 
 using namespace ddla;
@@ -40,16 +40,16 @@ int main(int argc, char* argv[])
 
     std::complex<double>* d_A;
     std::complex<double>* d_AT;
-    DEVICE_CHECK(deviceMalloc(&d_A, sizeof(std::complex<double>) * loc_size_A));
-    DEVICE_CHECK(deviceMalloc(&d_AT, sizeof(std::complex<double>) * loc_size_AT));
-    DEVICE_CHECK(deviceMemcpy(d_A, h_A.data(), sizeof(std::complex<double>) * loc_size_A, deviceMemcpyHostToDevice));
+    RUNTIME_CHECK(runtimeMalloc(&d_A, sizeof(std::complex<double>) * loc_size_A));
+    RUNTIME_CHECK(runtimeMalloc(&d_AT, sizeof(std::complex<double>) * loc_size_AT));
+    RUNTIME_CHECK(runtimeMemcpy(d_A, h_A.data(), sizeof(std::complex<double>) * loc_size_A, runtimeMemcpyHostToDevice));
     std::vector<std::complex<double>> h_zero_AT(loc_size_AT);
-    DEVICE_CHECK(deviceMemcpy(d_AT, h_zero_AT.data(), sizeof(std::complex<double>) * loc_size_AT, deviceMemcpyHostToDevice));
+    RUNTIME_CHECK(runtimeMemcpy(d_AT, h_zero_AT.data(), sizeof(std::complex<double>) * loc_size_AT, runtimeMemcpyHostToDevice));
 
     ptran(d_A, descA, d_AT, descAT);
 
     std::vector<std::complex<double>> h_AT(loc_size_AT);
-    DEVICE_CHECK(deviceMemcpy(h_AT.data(), d_AT, sizeof(std::complex<double>) * loc_size_AT, deviceMemcpyDeviceToHost));
+    RUNTIME_CHECK(runtimeMemcpy(h_AT.data(), d_AT, sizeof(std::complex<double>) * loc_size_AT, runtimeMemcpyDeviceToHost));
 
     // Gather global A and AT on host
     auto gather = [&](const DdlaDesc& desc, const std::vector<std::complex<double>>& local){
@@ -104,8 +104,8 @@ int main(int argc, char* argv[])
         std::cout << "ptran max_err " << global_max << std::endl;
     }
 
-    DEVICE_CHECK(deviceFree(d_A));
-    DEVICE_CHECK(deviceFree(d_AT));
+    RUNTIME_CHECK(runtimeFree(d_A));
+    RUNTIME_CHECK(runtimeFree(d_AT));
     ddla_destroy(handle);
     MPI_Finalize();
     return 0;

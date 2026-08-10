@@ -1,6 +1,6 @@
 /*
- * Unified 4-GPU benchmark for LibDDLA and legacy cuSOLVERMp factorization
- * routines.  All paths factor the same deterministic Hermitian positive-
+ * Unified 4-GPU benchmark for LibDDLA and cuSOLVERMp POTRF routines.  All
+ * paths factor the same deterministic Hermitian positive-
  * definite matrix, represented in the native local layout of each library.
  */
 
@@ -29,7 +29,7 @@
 #include <ddla/ddla_connector.h>
 #include <ddla/ddla_desc.h>
 #include <ddla/ddla_handle_t.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
 
 namespace {
 
@@ -55,25 +55,19 @@ struct Options {
 };
 
 enum class Algorithm {
-    libddla_pgetrf_nopiv = 0,
-    libddla_ppotrf_lower = 1,
-    libddla_pgetrf = 2,
-    cusolvermp_pzgetrf = 3,
+    libddla_ppotrf_lower = 0,
+    cusolvermp_ppotrf_lower = 1,
 };
 
-constexpr int kAlgorithmCount = 4;
+constexpr int kAlgorithmCount = 2;
 
 const char* algorithm_name(Algorithm algorithm)
 {
     switch(algorithm){
-    case Algorithm::libddla_pgetrf_nopiv:
-        return "libddla_pgetrf_nopiv";
     case Algorithm::libddla_ppotrf_lower:
         return "libddla_ppotrf_L";
-    case Algorithm::libddla_pgetrf:
-        return "libddla_pgetrf";
-    case Algorithm::cusolvermp_pzgetrf:
-        return "cusolvermp_pzgetrf";
+    case Algorithm::cusolvermp_ppotrf_lower:
+        return "cusolvermp_ppotrf_L";
     }
     return "unknown";
 }
@@ -361,7 +355,6 @@ struct VendorProblem {
     size_t count = 0;
     Complex* d_reference = nullptr;
     Complex* d_matrix = nullptr;
-    std::int64_t* d_pivots = nullptr;
     int* d_info = nullptr;
     void* d_workspace = nullptr;
     void* h_workspace = nullptr;
@@ -401,18 +394,16 @@ VendorProblem create_vendor_problem(int n, int process_row, int process_col,
 
     problem.d_reference = allocate_device<Complex>(problem.count);
     problem.d_matrix = allocate_device<Complex>(problem.count);
-    problem.d_pivots = allocate_device<std::int64_t>(
-        static_cast<size_t>(problem.local_rows + kBlockSize));
     problem.d_info = allocate_device<int>(1);
 
     BENCH_CUSOLVERMP_CHECK(cusolverMpCreateMatrixDesc(
         &problem.descriptor, context.grid, CUDA_C_64F, n, n,
         kBlockSize, kBlockSize, kSourceRow, kSourceCol, problem.lld));
 
-    BENCH_CUSOLVERMP_CHECK(cusolverMpGetrf_bufferSize(
-        context.handle, n, n, problem.d_matrix, 1, 1, problem.descriptor,
-        problem.d_pivots, CUDA_C_64F,
-        &problem.device_workspace_bytes, &problem.host_workspace_bytes));
+    BENCH_CUSOLVERMP_CHECK(cusolverMpPotrf_bufferSize(
+        context.handle, ddla::DEBLAS_FILL_MODE_LOWER, n, problem.d_matrix, 1, 1,
+        problem.descriptor, CUDA_C_64F, &problem.device_workspace_bytes,
+        &problem.host_workspace_bytes));
 
     if(problem.device_workspace_bytes > 0){
         BENCH_CUDA_CHECK(cudaMalloc(&problem.d_workspace,
@@ -462,10 +453,6 @@ void destroy_vendor_problem(VendorProblem& problem, cudaStream_t stream)
     if(problem.d_info != nullptr){
         BENCH_CUDA_CHECK(cudaFree(problem.d_info));
         problem.d_info = nullptr;
-    }
-    if(problem.d_pivots != nullptr){
-        BENCH_CUDA_CHECK(cudaFree(problem.d_pivots));
-        problem.d_pivots = nullptr;
     }
     if(problem.d_matrix != nullptr){
         BENCH_CUDA_CHECK(cudaFree(problem.d_matrix));
@@ -580,7 +567,7 @@ double compact_logdet_error(const Complex* d_matrix,
 }
 
 double padded_logdet_error(const VendorProblem& problem,
-                           cudaStream_t stream, MPI_Comm comm,
+                           bool cholesky, cudaStream_t stream, MPI_Comm comm,
                            int rank, const char* label)
 {
     double local_sum = 0.0;
@@ -613,7 +600,17 @@ double padded_logdet_error(const VendorProblem& problem,
                 local_valid = 0;
                 continue;
             }
-            local_sum += std::log(magnitude);
+            if(cholesky){
+                const double imag_tolerance = 1.0e-10
+                    * std::max(1.0, std::abs(diagonal.real()));
+                if(diagonal.real() <= 0.0
+                   || std::abs(diagonal.imag()) > imag_tolerance){
+                    local_valid = 0;
+                }
+                local_sum += 2.0 * std::log(magnitude);
+            }else{
+                local_sum += std::log(magnitude);
+            }
         }
     }
     BENCH_CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -629,7 +626,6 @@ struct RunResult {
 RunResult run_libddla(Algorithm algorithm, int n,
                       Complex* d_matrix, const Complex* d_reference,
                       size_t count, const ddla::DdlaDesc& desc,
-                      std::vector<int>& pivots,
                       const ddla::DdlaHandle_t& handle)
 {
     if(count > 0){
@@ -643,13 +639,9 @@ RunResult run_libddla(Algorithm algorithm, int n,
     bool sign_correction = false;
     BENCH_MPI_CHECK(MPI_Barrier(handle->comm));
     const double start = MPI_Wtime();
-    if(algorithm == Algorithm::libddla_pgetrf_nopiv){
-        ddla::pgetrf_nopiv(n, n, d_matrix, desc, info);
-    }else if(algorithm == Algorithm::libddla_ppotrf_lower){
+    if(algorithm == Algorithm::libddla_ppotrf_lower){
         sign_correction = ddla::ppotrf(
             'L', n, d_matrix, 1, 1, desc, info);
-    }else if(algorithm == Algorithm::libddla_pgetrf){
-        ddla::pgetrf(n, n, d_matrix, desc, pivots.data(), info);
     }else{
         abort_with_message("internal error: vendor algorithm sent to LibDDLA");
     }
@@ -682,11 +674,11 @@ RunResult run_cusolvermp(VendorProblem& problem,
 
     BENCH_MPI_CHECK(MPI_Barrier(handle->comm));
     const double start = MPI_Wtime();
-    BENCH_CUSOLVERMP_CHECK(cusolverMpGetrf(
-        context.handle, problem.n, problem.n, problem.d_matrix, 1, 1,
-        problem.descriptor, problem.d_pivots, CUDA_C_64F,
-        problem.d_workspace, problem.device_workspace_bytes,
-        problem.h_workspace, problem.host_workspace_bytes, problem.d_info));
+    BENCH_CUSOLVERMP_CHECK(cusolverMpPotrf(
+        context.handle, ddla::DEBLAS_FILL_MODE_LOWER, problem.n, problem.d_matrix,
+        1, 1, problem.descriptor, CUDA_C_64F, problem.d_workspace,
+        problem.device_workspace_bytes, problem.h_workspace,
+        problem.host_workspace_bytes, problem.d_info));
     BENCH_CAL_CHECK(cal_stream_sync(context.cal_comm, handle->stream));
     const double local_elapsed = MPI_Wtime() - start;
 
@@ -697,11 +689,11 @@ RunResult run_cusolvermp(VendorProblem& problem,
     BENCH_CUDA_CHECK(cudaMemcpyAsync(&info, problem.d_info, sizeof(info),
                                      cudaMemcpyDeviceToHost, handle->stream));
     BENCH_CUDA_CHECK(cudaStreamSynchronize(handle->stream));
-    check_factorization_status(algorithm_name(Algorithm::cusolvermp_pzgetrf),
+    check_factorization_status(algorithm_name(Algorithm::cusolvermp_ppotrf_lower),
                                info, false, handle->comm, handle->myid);
     const double logdet_error = padded_logdet_error(
-        problem, handle->stream, handle->comm, handle->myid,
-        algorithm_name(Algorithm::cusolvermp_pzgetrf));
+        problem, true, handle->stream, handle->comm, handle->myid,
+        algorithm_name(Algorithm::cusolvermp_ppotrf_lower));
     return {max_elapsed, logdet_error};
 }
 
@@ -751,18 +743,13 @@ void benchmark_dimension(int n, int repetitions, int warmup_size, bool warmup,
         }
         BENCH_CUDA_CHECK(cudaStreamSynchronize(handle->stream));
     }
-    std::vector<int> pivots(
-        static_cast<size_t>(std::max(desc.m_loc(), 1)), 0);
-
     VendorProblem vendor_problem = create_vendor_problem(
         n, handle->myprow_, handle->mypcol_, desc, d_compact_reference,
         vendor_context, handle->stream);
 
     const std::vector<Algorithm> algorithms = {
-        Algorithm::libddla_pgetrf_nopiv,
         Algorithm::libddla_ppotrf_lower,
-        Algorithm::libddla_pgetrf,
-        Algorithm::cusolvermp_pzgetrf,
+        Algorithm::cusolvermp_ppotrf_lower,
     };
     std::vector<double> times[kAlgorithmCount];
     std::vector<double> errors[kAlgorithmCount];
@@ -772,12 +759,12 @@ void benchmark_dimension(int n, int repetitions, int warmup_size, bool warmup,
             const int rotated = warmup ? order : (order + iteration) % kAlgorithmCount;
             const Algorithm algorithm = algorithms[static_cast<size_t>(rotated)];
             RunResult result;
-            if(algorithm == Algorithm::cusolvermp_pzgetrf){
+            if(algorithm == Algorithm::cusolvermp_ppotrf_lower){
                 result = run_cusolvermp(vendor_problem, vendor_context, handle);
             }else{
                 result = run_libddla(
                     algorithm, n, d_compact_matrix, d_compact_reference,
-                    compact_count, desc, pivots, handle);
+                    compact_count, desc, handle);
             }
             times[algorithm_index(algorithm)].push_back(result.time_seconds);
             errors[algorithm_index(algorithm)].push_back(result.logdet_error);
@@ -810,14 +797,11 @@ void benchmark_dimension(int n, int repetitions, int warmup_size, bool warmup,
         }
         std::cout << "TABLE"
                   << " n=" << n
-                  << " pgetrf_nopiv_s=" << std::fixed << std::setprecision(6)
-                  << medians[algorithm_index(Algorithm::libddla_pgetrf_nopiv)]
-                  << " ppotrf_L_s="
+                  << " libddla_ppotrf_L_s=" << std::fixed
+                  << std::setprecision(6)
                   << medians[algorithm_index(Algorithm::libddla_ppotrf_lower)]
-                  << " pgetrf_s="
-                  << medians[algorithm_index(Algorithm::libddla_pgetrf)]
-                  << " cusolvermp_pzgetrf_s="
-                  << medians[algorithm_index(Algorithm::cusolvermp_pzgetrf)]
+                  << " cusolvermp_ppotrf_L_s="
+                  << medians[algorithm_index(Algorithm::cusolvermp_ppotrf_lower)]
                   << std::defaultfloat << std::endl;
     }
 
@@ -868,12 +852,12 @@ int main(int argc, char** argv)
     cal_params.data = &cal_mpi_comm;
     cal_params.nranks = nranks;
     cal_params.rank = rank;
-    cal_params.local_device = ddla::DdlaStream::local_device;
+    cal_params.local_device = handle->local_device;
 
     VendorContext vendor_context;
     BENCH_CAL_CHECK(cal_comm_create(cal_params, &vendor_context.cal_comm));
     BENCH_CUSOLVERMP_CHECK(cusolverMpCreate(
-        &vendor_context.handle, ddla::DdlaStream::local_device, handle->stream));
+        &vendor_context.handle, handle->local_device, handle->stream));
     BENCH_CUSOLVERMP_CHECK(cusolverMpCreateDeviceGrid(
         vendor_context.handle, &vendor_context.grid, vendor_context.cal_comm,
         kProcessRows, kProcessCols, CUSOLVERMP_GRID_MAPPING_ROW_MAJOR));

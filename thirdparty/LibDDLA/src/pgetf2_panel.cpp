@@ -2,10 +2,11 @@
 #include <cassert>
 #include <vector>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
 #include <ddla/gemm.h>
 #include <ddla/trsm.h>
-#include <ddla/ddla_comm.h>
+#include "comm_traits.h"
 
 namespace ddla{
 
@@ -19,12 +20,8 @@ void pgetf2_panel(
 )
 {
     DdlaHandle_t ddla_handle = array_descA.ddla_handle();
+    detail::require_gpu_backend(ddla_handle, "pgetf2_panel");
 
-    #ifdef DDLA_USE_CCL
-    ncclComm_t col_nccl_comm = ddla_handle->nccl_col_comm;
-    #else
-    MPI_Comm col_nccl_comm = ddla_handle->col_comm;
-    #endif
 
     int nprows = array_descA.nprows();
     int npcols = array_descA.npcols();
@@ -41,7 +38,7 @@ void pgetf2_panel(
     const int panel = std::min(32, nb/2>0?nb/2:1);
     int panel_real;
 
-    deviceStream_t stream=ddla_handle->stream;
+    runtimeStream_t stream=ddla_handle->stream;
     deblasHandle_t blasH=ddla_handle->blasH;
 
     int mm_row_start = num_loc(n_start, nb, myprow, array_descA.irsrc(), nprows);
@@ -50,7 +47,7 @@ void pgetf2_panel(
     int owner_row;
 
     T *d_temp_U;
-    DEVICE_CHECK(deviceMallocAsync(&d_temp_U, sizeof(T)*nb_real*panel, stream));
+    RUNTIME_CHECK(runtimeMallocAsync(&d_temp_U, sizeof(T)*nb_real*panel, stream));
 
     info = 0;
 
@@ -72,7 +69,7 @@ void pgetf2_panel(
             ipiv, info
         );
         if(info != 0){
-            DEVICE_CHECK(deviceFreeAsync(d_temp_U, stream));
+            RUNTIME_CHECK(runtimeFreeAsync(d_temp_U, stream));
             return;
         }
         // finish pgetf2
@@ -91,30 +88,29 @@ void pgetf2_panel(
                     d_A + i_loc + mm_col_start * lld, lld)
                 );
                 // printf("before d_temp_U:%d, j_loc:%d, nb_real:%d, mm_col_start:%d\n", ddla_handle->myid, j_loc, nb_real, mm_col_start);
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_temp_U, panel_real * sizeof(T),
                     d_A + i_loc + mm_col_start * lld, lld * sizeof(T),
                     panel_real * sizeof(T), j_s + nb_real - mm_col_start,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
             } 
-            CCL_CHECK(cclBcast(d_temp_U,panel_real * (j_s + nb_real - mm_col_start),owner_row,col_nccl_comm,stream));  
+            commBcast(ddla_handle, CommScope::Col, d_temp_U, (std::size_t)panel_real * (j_s + nb_real - mm_col_start), owner_row);
         }
         // printf("myid:%d, n_s:%d, update trailing matrix mm_row_start:%d, mm_col_start:%d\n",mpi_comm_global_h.myid,n_s,mm_row_start,mm_col_start);
         if(mm_row_start<m_loc && mm_col_start<j_s + nb_real && j_loc>=0){
-            BLAS_CHECK(deblasGemm(
-                blasH, DEBLAS_OP_N, DEBLAS_OP_N,
+            gemm<DdlaBackend::GPU, T>(ddla_handle, 'N', 'N',
                 m_loc - mm_row_start, j_s + nb_real - mm_col_start, panel_real,
                 -1.0,
                 d_A + mm_row_start + j_loc * lld, lld,
                 d_temp_U, panel_real,
                 1.0,
                 d_A + mm_row_start + mm_col_start * lld, lld
-            ));
+            );
         }
     }
     info = 0;
-    DEVICE_CHECK(deviceFreeAsync(d_temp_U, stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_temp_U, stream));
 
 }
 

@@ -2,17 +2,22 @@
 #include <cassert>
 #include <vector>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include <stdexcept>
+#include <string>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
 
 namespace ddla{
 
 template <typename T>
 void pgesv(
-    const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     T* d_A, const DdlaDesc& array_descA,
     T* d_B, const DdlaDesc& array_descB
 )
 {
+    DdlaHandle_t ddla_handle = array_descA.ddla_handle();
+    detail::require_gpu_backend(ddla_handle, "pgesv");
     std::vector<int> ipiv(array_descA.m_loc());
     int info = 0;
     pgetrf(
@@ -22,11 +27,10 @@ void pgesv(
         info
     );
     if(info !=0){
-        printf("Error in pzgetrf, info = %d\n", info);
-        throw std::runtime_error("info !=0\n");
+        throw std::runtime_error("pgesv: pgetrf returned info = " + std::to_string(info));
     }
     pgetrs(
-        'N', n, nrhs,
+        side, trans, n, nrhs,
         d_A, array_descA,
         ipiv.data(),
         d_B, array_descB
@@ -34,25 +38,25 @@ void pgesv(
 }
 
 template void pgesv<float>(
-    const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     float* d_A, const DdlaDesc& array_descA,
     float* d_B, const DdlaDesc& array_descB
 );
 
 template void pgesv<double>(
-    const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     double* d_A, const DdlaDesc& array_descA,
     double* d_B, const DdlaDesc& array_descB
 );
 
 template void pgesv<std::complex<float>>(
-    const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     std::complex<float>* d_A, const DdlaDesc& array_descA,
     std::complex<float>* d_B, const DdlaDesc& array_descB
 );
 
 template void pgesv<std::complex<double>>(
-    const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     std::complex<double>* d_A, const DdlaDesc& array_descA,
     std::complex<double>* d_B, const DdlaDesc& array_descB
 );

@@ -2,10 +2,11 @@
 #include <cassert>
 #include <vector>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
 #include <ddla/gemm.h>
 #include <ddla/trsm.h>
-#include <ddla/ddla_comm.h>
+#include "comm_traits.h"
 
 namespace ddla{
 
@@ -18,14 +19,8 @@ void pgetrf(
 )
 {
     DdlaHandle_t ddla_handle = array_descA.ddla_handle();
+    detail::require_gpu_backend(ddla_handle, "pgetrf");
 
-    #ifdef DDLA_USE_CCL
-    ncclComm_t row_nccl_comm = ddla_handle->nccl_row_comm;
-    ncclComm_t col_nccl_comm = ddla_handle->nccl_col_comm;
-    #else
-    MPI_Comm row_nccl_comm = ddla_handle->row_comm;
-    MPI_Comm col_nccl_comm = ddla_handle->col_comm;
-    #endif
     int nprows = array_descA.nprows();
     int npcols = array_descA.npcols();
     int myprow = array_descA.myprow();
@@ -39,7 +34,7 @@ void pgetrf(
     int m_loc = array_descA.m_loc();
     int n_loc = array_descA.n_loc();
 
-    deviceStream_t stream=ddla_handle->stream;
+    runtimeStream_t stream=ddla_handle->stream;
     deblasHandle_t blasH=ddla_handle->blasH;
 
     int mm_row_start = 0;
@@ -48,13 +43,13 @@ void pgetrf(
     int owner_row,owner_col;
 
     T *d_temp_block;
-    DEVICE_CHECK(deviceMallocAsync(&d_temp_block, sizeof(T)*nb*nb, stream));
+    RUNTIME_CHECK(runtimeMallocAsync(&d_temp_block, sizeof(T)*nb*nb, stream));
 
     T *d_temp_L;
-    DEVICE_CHECK(deviceMallocAsync(&d_temp_L, sizeof(T)*m_loc*nb, stream));
+    RUNTIME_CHECK(runtimeMallocAsync(&d_temp_L, sizeof(T)*m_loc*nb, stream));
 
     T *d_temp_U;
-    DEVICE_CHECK(deviceMallocAsync(&d_temp_U, sizeof(T)*nb*n_loc, stream));
+    RUNTIME_CHECK(runtimeMallocAsync(&d_temp_U, sizeof(T)*nb*n_loc, stream));
 
     info = 0;
 
@@ -85,29 +80,29 @@ void pgetrf(
         if(j_loc>=0){
             mm_col_start+=nb;
             if(i_loc>=0){
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_temp_block, nb_real * sizeof(T),
                     d_A + i_loc + j_loc * lld, lld * sizeof(T),
                     nb_real * sizeof(T), nb_real,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
                 
             }
             if(mm_row_start<m_loc){
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_temp_L, (m_loc-mm_row_start) * sizeof(T),
                     d_A + mm_row_start + j_loc * lld, lld * sizeof(T),
                     (m_loc - mm_row_start) * sizeof(T), nb_real,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
             }
         }
         if(mm_row_start<m_loc){
-            CCL_CHECK(cclBcast(d_temp_L,(m_loc - mm_row_start) * nb_real,owner_col,row_nccl_comm,stream));
+            commBcast(ddla_handle, CommScope::Row, d_temp_L, (std::size_t)(m_loc - mm_row_start) * nb_real, owner_col);
         }
         // broadcast block column
         if(i_loc>=0){
-            CCL_CHECK(cclBcast(d_temp_block,nb_real * nb_real,owner_col,row_nccl_comm,stream));
+            commBcast(ddla_handle, CommScope::Row, d_temp_block, (std::size_t)nb_real * nb_real, owner_col);
             if(mm_col_start<n_loc){
                 BLAS_CHECK(deblasTrsm(
                     blasH, DEBLAS_SIDE_LEFT, DEBLAS_FILL_MODE_LOWER, DEBLAS_OP_N, DEBLAS_DIAG_UNIT,
@@ -115,34 +110,31 @@ void pgetrf(
                     d_temp_block, nb_real,
                     d_A + i_loc + mm_col_start * lld, lld)
                 );
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_temp_U, nb_real * sizeof(T),
                     d_A + i_loc + mm_col_start * lld, lld * sizeof(T),
                     nb_real * sizeof(T), n_loc - mm_col_start,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
             }   
         }
         if(mm_col_start<n_loc){
-            CCL_CHECK(cclBcast(d_temp_U,nb_real * (n_loc - mm_col_start), owner_row, col_nccl_comm, stream));
+            commBcast(ddla_handle, CommScope::Col, d_temp_U, (std::size_t)nb_real * (n_loc - mm_col_start), owner_row);
         }
-        // printf("myid:%d, n_s:%d, update trailing matrix mm_row_start:%d, mm_col_start:%d\n",mpi_comm_global_h.myid,n_s,mm_row_start,mm_col_start);
         if(mm_row_start<m_loc&&mm_col_start<n_loc){
-            BLAS_CHECK(deblasGemm(
-                blasH, DEBLAS_OP_N, DEBLAS_OP_N,
+            gemm<DdlaBackend::GPU, T>(ddla_handle, 'N', 'N',
                 m_loc - mm_row_start, n_loc - mm_col_start, nb_real,
                 -1.0,
                 d_temp_L, m_loc - mm_row_start,
                 d_temp_U, nb_real,
                 1.0,
-                d_A + mm_row_start + mm_col_start * lld, lld
-            ));
+                d_A + mm_row_start + mm_col_start * lld, lld);
         }
     }
-    DEVICE_CHECK(deviceFreeAsync(d_temp_block, stream));
-    DEVICE_CHECK(deviceFreeAsync(d_temp_L, stream));
-    DEVICE_CHECK(deviceFreeAsync(d_temp_U, stream));
-    DEVICE_CHECK(deviceStreamSynchronize(stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_temp_block, stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_temp_L, stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_temp_U, stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(stream));
 
 }
 

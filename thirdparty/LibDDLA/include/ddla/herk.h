@@ -32,6 +32,53 @@ inline deblasStatus_t deblasHerk(
     #endif
 }
 
+
+inline deblasStatus_t deblasHerk(
+    deblasHandle_t handle,
+    deblasFillMode_t uplo, deblasOperation_t trans,
+    int n, int k,
+    const float& alpha,
+    const float* A, int lda,
+    const float& beta,
+    float* C, int ldc
+)
+{
+    // Real HERK == SYRK.  For real data a conjugate transpose is identical
+    // to a plain transpose, so map DEBLAS_OP_C -> transpose as well.
+    deblasOperation_t trans_real = (trans == DEBLAS_OP_N) ? DEBLAS_OP_N : DEBLAS_OP_T;
+    #if defined(DDLA_USE_HIP)
+    return hipblasSsyrk(handle, uplo, trans_real, n, k,
+        &alpha, A, lda, &beta, C, ldc);
+    #elif defined(DDLA_USE_CUDA)
+    return cublasSsyrk(handle, uplo, trans_real, n, k,
+        &alpha, A, lda, &beta, C, ldc);
+    #else
+    throw std::runtime_error("ENABLE CUDA or ENABLE HIP not enable\n");
+    #endif
+}
+
+inline deblasStatus_t deblasHerk(
+    deblasHandle_t handle,
+    deblasFillMode_t uplo, deblasOperation_t trans,
+    int n, int k,
+    const double& alpha,
+    const double* A, int lda,
+    const double& beta,
+    double* C, int ldc
+)
+{
+    deblasOperation_t trans_real = (trans == DEBLAS_OP_N) ? DEBLAS_OP_N : DEBLAS_OP_T;
+    #if defined(DDLA_USE_HIP)
+    return hipblasDsyrk(handle, uplo, trans_real, n, k,
+        &alpha, A, lda, &beta, C, ldc);
+    #elif defined(DDLA_USE_CUDA)
+    return cublasDsyrk(handle, uplo, trans_real, n, k,
+        &alpha, A, lda, &beta, C, ldc);
+    #else
+    throw std::runtime_error("ENABLE CUDA or ENABLE HIP not enable\n");
+    #endif
+}
+
 inline deblasStatus_t deblasHerk(
     deblasHandle_t handle,
     deblasFillMode_t uplo, deblasOperation_t trans,

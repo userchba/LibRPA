@@ -19,7 +19,7 @@ void check_pgetrf(const ddla::DdlaHandle_t& handle, const Shape& base)
         });
         DeviceBuffer<Complex> d_singular(handle, h_singular.size());
         upload(handle, d_singular.ptr, h_singular);
-        DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+        check_ddla_sync(handle);
 
         std::vector<int> singular_ipiv(descA.m_loc(), -1);
         int singular_info = -1;
@@ -35,13 +35,13 @@ void check_pgetrf(const ddla::DdlaHandle_t& handle, const Shape& base)
     DeviceBuffer<Complex> d_B(handle, h_B.size());
     upload(handle, d_A.ptr, h_A);
     upload(handle, d_B.ptr, h_B);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
 
     std::vector<int> ipiv(descA.m_loc());
     int info = -1;
     ddla::pgetrf(n, n, d_A.ptr, descA, ipiv.data(), info);
-    if(info != 0) MPI_Abort(handle->comm, 1);
-    ddla::pgetrs('N', n, nrhs, d_A.ptr, descA, ipiv.data(), d_B.ptr, descB);
+    if(info != 0) MPI_Abort(ddla_get_communicator(handle), 1);
+    ddla::pgetrs('L', 'N', n, nrhs, d_A.ptr, descA, ipiv.data(), d_B.ptr, descB);
     check_solution(handle, descB, d_B.ptr, h_B.size(), "pgetrf", 5e-9);
 }
 

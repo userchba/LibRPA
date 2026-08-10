@@ -8,8 +8,8 @@
 #SBATCH --mem=32G
 #SBATCH --time=00:30:00
 #SBATCH --exclusive
-#SBATCH --output=/data/home/renxg/app/log_factor4_hpd_%j.out
-#SBATCH --error=/data/home/renxg/app/log_factor4_hpd_%j.err
+#SBATCH --output=/data/home/renxg/app/log_factor4_hpd.out
+#SBATCH --error=/data/home/renxg/app/log_factor4_hpd.err
 
 set -euo pipefail
 
@@ -59,6 +59,8 @@ cmake --build "${BUILD}" --target ddla_lib --parallel 12
 mpicxx -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wpedantic \
     -DDDLA_USE_CUDA -DDDLA_USE_CCL \
     -I"${REPO}/include" \
+    -I"${REPO}/src" \
+    -I"${BUILD}/include" \
     -I"${MATH}/include" \
     -I"${CUDA}/include" \
     "${REPO}/tests/benchmark_factorizations_cuda.cpp" \
@@ -98,8 +100,12 @@ fi
 export OMPI_MCA_mpi_warn_on_fork=0
 export OMP_NUM_THREADS=1
 
-echo "Benchmark command: --warmup 500 --repeats 1 5000 10000 15000"
+WARMUP_N=500
+BENCHMARK_SIZES=(5000 10000 15000)
+NB=128  # Fixed by benchmark_factorizations_cuda.cpp.
+
+echo "Benchmark parameters: warm-up n=${WARMUP_N}, n=${BENCHMARK_SIZES[*]}, nb=${NB}"
 mpirun -n 4 --bind-to none --mca btl ^openib \
-    "${EXE}" --warmup 500 --repeats 1 5000 10000 15000
+    "${EXE}" --warmup "${WARMUP_N}" --repeats 1 "${BENCHMARK_SIZES[@]}"
 
 echo "End: $(date --iso-8601=seconds)"

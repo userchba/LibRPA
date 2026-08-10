@@ -1,6 +1,7 @@
 #include <ddla/ddla.h>
 #include <cassert>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
 
 namespace ddla {
 
@@ -25,41 +26,66 @@ namespace ddla {
  */
 template<typename T>
 void pgetrs_nopiv(
-    const char& trans, const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     T* d_A, const DdlaDesc& array_descA,
     T* d_B, const DdlaDesc& array_descB
 )
 {
-    assert(trans == 'N');
+    DdlaHandle_t ddla_handle = array_descA.ddla_handle();
+    detail::require_gpu_backend(ddla_handle, "pgetrs_nopiv");
+    assert(side == 'L' || side == 'R');
+    assert(trans == 'N' || trans == 'T' || trans == 'C');
+    const int b_rows = (side == 'L') ? n : nrhs;
+    const int b_cols = (side == 'L') ? nrhs : n;
 
-    // Forward solve: L * Y = B (L lower, unit diagonal)
-    ptrtrs('L', 'L', 'N', 'U', n, nrhs,
-           d_A, array_descA,
-           d_B, array_descB);
-
-    // Backward solve: U * X = Y (U upper, non-unit diagonal)
-    ptrtrs('L', 'U', 'N', 'N', n, nrhs,
-           d_A, array_descA,
-           d_B, array_descB);
+    if(side == 'L'){
+        if(trans == 'N'){
+            // A = L*U => X = U^-1 * L^-1 * B: solve L then U.
+            ptrtrs('L', 'L', 'N', 'U', b_rows, b_cols,
+                   d_A, array_descA, d_B, array_descB);
+            ptrtrs('L', 'U', 'N', 'N', b_rows, b_cols,
+                   d_A, array_descA, d_B, array_descB);
+        }else{
+            // A^T = U^T * L^T => X = L^-T * U^-T * B: solve U^T then L^T.
+            ptrtrs('L', 'U', trans, 'N', b_rows, b_cols,
+                   d_A, array_descA, d_B, array_descB);
+            ptrtrs('L', 'L', trans, 'U', b_rows, b_cols,
+                   d_A, array_descA, d_B, array_descB);
+        }
+    }else{
+        if(trans == 'N'){
+            // X * L * U = B => X = B * U^-1 * L^-1: solve U then L.
+            ptrtrs('R', 'U', 'N', 'N', b_rows, b_cols,
+                   d_A, array_descA, d_B, array_descB);
+            ptrtrs('R', 'L', 'N', 'U', b_rows, b_cols,
+                   d_A, array_descA, d_B, array_descB);
+        }else{
+            // X * U^T * L^T = B => X = B * L^-T * U^-T: solve L^T then U^T.
+            ptrtrs('R', 'L', trans, 'U', b_rows, b_cols,
+                   d_A, array_descA, d_B, array_descB);
+            ptrtrs('R', 'U', trans, 'N', b_rows, b_cols,
+                   d_A, array_descA, d_B, array_descB);
+        }
+    }
 }
 
 template void pgetrs_nopiv<float>(
-    const char& trans, const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     float* d_A, const DdlaDesc& array_descA,
     float* d_B, const DdlaDesc& array_descB
 );
 template void pgetrs_nopiv<double>(
-    const char& trans, const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     double* d_A, const DdlaDesc& array_descA,
     double* d_B, const DdlaDesc& array_descB
 );
 template void pgetrs_nopiv<std::complex<float>>(
-    const char& trans, const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     std::complex<float>* d_A, const DdlaDesc& array_descA,
     std::complex<float>* d_B, const DdlaDesc& array_descB
 );
 template void pgetrs_nopiv<std::complex<double>>(
-    const char& trans, const int& n, const int& nrhs,
+    const char& side, const char& trans, const int& n, const int& nrhs,
     std::complex<double>* d_A, const DdlaDesc& array_descA,
     std::complex<double>* d_B, const DdlaDesc& array_descB
 );

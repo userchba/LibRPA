@@ -14,7 +14,7 @@ std::size_t pgetf2_pivot_workspace_size();
 // stream once because the MPI pivot reduction consumes the host result.
 template <typename T>
 void pgetf2_find_local_pivot(const T* d_column, int length,
-                             void* d_workspace, deviceStream_t stream,
+                             void* d_workspace, runtimeStream_t stream,
                              double& metric, int& local_index, T& value);
 
 template <typename T>
@@ -22,7 +22,7 @@ void pgetf2_scale_update(int length_row, int length_col,
                          const T& inverse_pivot,
                          T* d_column, const T* d_pivot_row,
                          T* d_trailing, int lld,
-                         deviceStream_t stream);
+                         runtimeStream_t stream);
 
 } // namespace ddla::detail
 

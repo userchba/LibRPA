@@ -1,6 +1,7 @@
 #include <ddla/ddla.h>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
 #include <thrust/complex.h>
 #include <type_traits>
 #include <cassert>
@@ -67,14 +68,15 @@ void pdam(const T1& alpha, T2* d_A, const DdlaDesc& array_descA)
     if (n <= 0) return;
 
     DdlaHandle_t handle = array_descA.ddla_handle();
-    deviceStream_t stream = handle->stream;
+    detail::require_gpu_backend(handle, "pdam");
+    runtimeStream_t stream = handle->stream;
 
     using deviceT1 = typename detail::device_scalar<T1>::type;
     using deviceT2 = typename detail::device_scalar<T2>::type;
 
     deviceT1* d_alpha = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(reinterpret_cast<void**>(&d_alpha), sizeof(deviceT1), stream));
-    DEVICE_CHECK(deviceMemcpyAsync(d_alpha, &alpha, sizeof(deviceT1), deviceMemcpyHostToDevice, stream));
+    RUNTIME_CHECK(runtimeMallocAsync(reinterpret_cast<void**>(&d_alpha), sizeof(deviceT1), stream));
+    RUNTIME_CHECK(runtimeMemcpyAsync(d_alpha, &alpha, sizeof(deviceT1), runtimeMemcpyHostToDevice, stream));
 
     const int blockSize = 256;
     const int gridSize = (n + blockSize - 1) / blockSize;
@@ -88,9 +90,9 @@ void pdam(const T1& alpha, T2* d_A, const DdlaDesc& array_descA)
         array_descA.myprow(), array_descA.mypcol(),
         array_descA.nprows(), array_descA.npcols(),
         array_descA.lld());
-    DEVICE_CHECK(deviceGetLastError());
+    RUNTIME_CHECK(runtimeGetLastError());
 
-    DEVICE_CHECK(deviceFreeAsync(d_alpha, stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_alpha, stream));
 }
 
 // Supported type combinations match LibRPA's DeviceConnector::pdam.

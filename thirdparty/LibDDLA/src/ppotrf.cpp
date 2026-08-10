@@ -2,7 +2,8 @@
 #include <cassert>
 #include <cstddef>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
 #include <vector>
 #include <type_traits>
 #include <cmath>
@@ -29,17 +30,27 @@ bool ppotrf(
     assert(array_descA.mb() == array_descA.nb());
     assert(n > 0);
     DdlaHandle_t ddla_handle = array_descA.ddla_handle();
+    detail::require_gpu_backend(ddla_handle, "ppotrf");
     if(is_head)
     if(location != -1 && location != n){
+        // Symmetric permutation swapping global row/column `location` with
+        // the last index `n`: row swap (inca == m(), full row) then column
+        // swap (inca == 1, full column). A is a fully-populated (both
+        // triangles) Hermitian array, so both swaps touching every row/
+        // column entry keeps the matrix consistently Hermitian afterward --
+        // this is not a packed-triangle representation.
         pswap(
             n,
             A, location, 1, array_descA, array_descA.m(),
             A, n, 1, array_descA, array_descA.m()
         );
         pswap(
+            // Was: A, 1, location, array_descA, 1 as the second operand --
+            // swapping column `location` with itself, a no-op that left the
+            // column swap half of the permutation never applied.
             n,
             A, 1, location, array_descA, 1,
-            A, 1, location, array_descA, 1
+            A, 1, n, array_descA, 1
         );
     }
 
@@ -59,7 +70,7 @@ bool ppotrf(
     MPI_Comm row_comm=ddla_handle->row_comm;
     MPI_Comm col_comm=ddla_handle->col_comm;
     #endif
-    deviceStream_t stream=ddla_handle->stream;
+    runtimeStream_t stream=ddla_handle->stream;
     deblasHandle_t blasH=ddla_handle->blasH;
     desolverHandle_t solverH=ddla_handle->solverH;
 
@@ -74,12 +85,12 @@ bool ppotrf(
             *ptr = nullptr;
             return;
         }
-        DEVICE_CHECK(deviceMallocAsync(ptr, bytes, stream));
+        RUNTIME_CHECK(runtimeMallocAsync(ptr, bytes, stream));
     };
     auto device_free_if_nonnull = [&](void* ptr)
     {
         if(ptr != nullptr){
-            DEVICE_CHECK(deviceFreeAsync(ptr, stream));
+            RUNTIME_CHECK(runtimeFreeAsync(ptr, stream));
         }
     };
 
@@ -125,7 +136,7 @@ bool ppotrf(
         device_free_if_nonnull(d_block_row);
         device_free_if_nonnull(d_block_col);
         device_free_if_nonnull(d_info);
-        DEVICE_CHECK(deviceStreamSynchronize(stream));
+        RUNTIME_CHECK(runtimeStreamSynchronize(stream));
     };
     int h_info;
     int i_batch_count, row_s, col_s, row_remain, col_remain, length_row, length_col;
@@ -173,7 +184,7 @@ bool ppotrf(
                     }
                 }
                 T last_value;
-                DEVICE_CHECK(deviceMemcpyAsync(&last_value, A + mm_row_start + nb_real - 1 + (mm_col_start + nb_real - 1) * lldA, sizeof(T), deviceMemcpyDeviceToHost, stream));
+                RUNTIME_CHECK(runtimeMemcpyAsync(&last_value, A + mm_row_start + nb_real - 1 + (mm_col_start + nb_real - 1) * lldA, sizeof(T), runtimeMemcpyDeviceToHost, stream));
                 is_nega = false;
                 if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>){
                     if(last_value < 0){
@@ -189,16 +200,16 @@ bool ppotrf(
                     throw std::runtime_error("unsupported template type\n");
                 }
                 last_value = std::sqrt(last_value);
-                DEVICE_CHECK(deviceMemcpyAsync(A + mm_row_start + nb_real - 1 + (mm_col_start + nb_real - 1) * lldA, &last_value, sizeof(T), deviceMemcpyHostToDevice, stream));
+                RUNTIME_CHECK(runtimeMemcpyAsync(A + mm_row_start + nb_real - 1 + (mm_col_start + nb_real - 1) * lldA, &last_value, sizeof(T), runtimeMemcpyHostToDevice, stream));
             }else
                 SOLVER_CHECK(desolverPotrf(solverH, uplo_device, nb_real, A + mm_row_start + mm_col_start * lldA, lldA, d_info));
-            DEVICE_CHECK(deviceStreamSynchronize(stream));
-            DEVICE_CHECK(deviceMemcpy(&info, d_info, sizeof(int), deviceMemcpyDeviceToHost));
-            DEVICE_CHECK(deviceMemcpy2DAsync(
+            RUNTIME_CHECK(runtimeStreamSynchronize(stream));
+            RUNTIME_CHECK(runtimeMemcpy(&info, d_info, sizeof(int), runtimeMemcpyDeviceToHost));
+            RUNTIME_CHECK(runtimeMemcpy2DAsync(
                 d_block_diag, nb_real * sizeof(T),
                 A + mm_row_start + mm_col_start * lldA, lldA * sizeof(T),
                 nb_real * sizeof(T), nb_real,
-                deviceMemcpyDeviceToDevice, stream
+                runtimeMemcpyDeviceToDevice, stream
             ));
         }
         if(n_s + nb_real == array_descA.m())
@@ -206,7 +217,6 @@ bool ppotrf(
         MPI_CHECK(MPI_Bcast(&info, 1, MPI_INT, ddla_handle->rc_to_rank(owner_row, owner_col), ddla_handle->comm));
         if(info != 0){
             info = info + n_s;
-            printf("the matrix is not positive definite myid:%d, info:%d\n", ddla_handle->myid, info);
             cleanup_device_buffers();
             return false;
         }
@@ -227,11 +237,11 @@ bool ppotrf(
                     d_block_diag, nb_real,
                     A + mm_row_start + mm_col_start * lldA, lldA
                 ));
-                DEVICE_CHECK(deviceMemcpy2DAsync(
+                RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_block_col, length_row * sizeof(T),
                     A + mm_row_start + mm_col_start * lldA, lldA * sizeof(T),
                     length_row * sizeof(T), nb_real,
-                    deviceMemcpyDeviceToDevice, stream
+                    runtimeMemcpyDeviceToDevice, stream
                 ));
             }
         }
@@ -247,7 +257,7 @@ bool ppotrf(
         }
         if(myprow == mypcol){
             if(length_col > 0)
-                DEVICE_CHECK(deviceMemcpyAsync(d_block_row, d_block_col, length_col * nb_real * sizeof(T), deviceMemcpyDeviceToDevice, stream));
+                RUNTIME_CHECK(runtimeMemcpyAsync(d_block_row, d_block_col, length_col * nb_real * sizeof(T), runtimeMemcpyDeviceToDevice, stream));
         }
         if(length_col > 0){
             #ifdef DDLA_USE_GPU_CPU_TUNNEL
@@ -267,15 +277,15 @@ bool ppotrf(
         }else{
             // the first approach in which the unused block will be polluted
             // if(length_row > 0 && length_col > 0)
-            //     BLAS_CHECK(deblasGemm(
-            //         blasH, DEBLAS_OP_N, DEBLAS_OP_T,
+            //     gemm<DdlaBackend::GPU, T>(
+            //         ddla_handle, 'N', 'T',
             //         length_row, length_col, nb_real,
             //         (T)-1.0,
             //         d_block_col, length_row,
             //         d_block_row, length_col,
             //         (T)1.0,
             //         A + mm_row_start + mm_col_start * lldA, lldA
-            //     ));
+            //     );
             // the second method is to use the batched gemm which will not pollute the unused block
             if(length_row <= 0 || length_col <= 0)
                 continue;
@@ -302,13 +312,12 @@ bool ppotrf(
                 }while(g_row_s < g_col_s);
                 length_col_real += nb;
                 if(length_col_real > 0)
-                    BLAS_CHECK(deblasGemm(
-                        blasH, DEBLAS_OP_N, DEBLAS_OP_C,
+                    gemm<DdlaBackend::GPU, T>(ddla_handle, 'N', 'C',
                         row_remain, length_col_real, nb_real, (T)-1.0,
                         d_block_col + length_row - row_remain, length_row,
                         d_block_row, length_col,
                         (T)1.0, A + mm_row_start + mm_col_start * lldA + (length_row - row_remain), lldA
-                    ));
+                    );
             }
             if(col_remain != 0){
                 int g_col_s = array_descA.indx_l2g_c(array_descA.n_loc() - col_remain);
@@ -319,13 +328,12 @@ bool ppotrf(
                     g_row_s = array_descA.indx_l2g_r(mm_row_start + length_row - length_row_real);
                 }while(g_row_s < g_col_s);
                 if(length_row_real > 0)
-                    BLAS_CHECK(deblasGemm(
-                        blasH, DEBLAS_OP_N, DEBLAS_OP_C,
+                    gemm<DdlaBackend::GPU, T>(ddla_handle, 'N', 'C',
                         length_row_real, col_remain, nb, (T)-1.0,
                         d_block_col + length_row - length_row_real, length_row,
                         d_block_row + length_col - col_remain, length_col,
                         (T)1.0, A + mm_row_start + mm_col_start * lldA + (length_row - length_row_real) + (length_col - col_remain) * lldA, lldA
-                    ));
+                    );
             }
             // printf("1-myid:%d, length_row:%d, length_col:%d, i_batch_count:%d\n", ddla_handle->myid, length_row, length_col, i_batch_count);
             for(;row_s <= num_row_block * nb; row_s += nb){
@@ -349,9 +357,9 @@ bool ppotrf(
             }
             // printf("2-myid:%d, length_row:%d, length_col:%d, i_batch_count:%d\n", ddla_handle->myid, length_row, length_col, i_batch_count);
             if(i_batch_count == 0) continue;
-            DEVICE_CHECK(deviceMemcpyAsync(d_A_array, h_A_array.data(), i_batch_count * sizeof(T*), deviceMemcpyHostToDevice, stream));
-            DEVICE_CHECK(deviceMemcpyAsync(d_B_array, h_B_array.data(), i_batch_count * sizeof(T*), deviceMemcpyHostToDevice, stream));
-            DEVICE_CHECK(deviceMemcpyAsync(d_C_array, h_C_array.data(), i_batch_count * sizeof(T*), deviceMemcpyHostToDevice, stream));
+            RUNTIME_CHECK(runtimeMemcpyAsync(d_A_array, h_A_array.data(), i_batch_count * sizeof(T*), runtimeMemcpyHostToDevice, stream));
+            RUNTIME_CHECK(runtimeMemcpyAsync(d_B_array, h_B_array.data(), i_batch_count * sizeof(T*), runtimeMemcpyHostToDevice, stream));
+            RUNTIME_CHECK(runtimeMemcpyAsync(d_C_array, h_C_array.data(), i_batch_count * sizeof(T*), runtimeMemcpyHostToDevice, stream));
             BLAS_CHECK(deblasGemmBatched(
                 blasH, DEBLAS_OP_N, DEBLAS_OP_C,
                 nb, nb, nb_real, -1.0,
@@ -362,7 +370,7 @@ bool ppotrf(
             ));
 
             
-            DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+            RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
         }
         }else{
             if(mypcol == owner_col)
@@ -381,11 +389,11 @@ bool ppotrf(
                         d_block_diag, nb_real,
                         A + mm_row_start + mm_col_start * lldA, lldA
                     ));
-                    DEVICE_CHECK(deviceMemcpy2DAsync(
+                    RUNTIME_CHECK(runtimeMemcpy2DAsync(
                         d_block_row, nb_real * sizeof(T),
                         A + mm_row_start + mm_col_start * lldA, lldA * sizeof(T),
                         nb_real * sizeof(T), length_col,
-                        deviceMemcpyDeviceToDevice, stream
+                        runtimeMemcpyDeviceToDevice, stream
                     ));
                 }
             }
@@ -401,7 +409,7 @@ bool ppotrf(
             }
             if(myprow == mypcol){
                 if(length_row > 0)
-                    DEVICE_CHECK(deviceMemcpyAsync(d_block_col, d_block_row, nb_real * length_row * sizeof(T), deviceMemcpyDeviceToDevice, stream));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(d_block_col, d_block_row, nb_real * length_row * sizeof(T), runtimeMemcpyDeviceToDevice, stream));
             }
             if(length_row > 0){
                 #ifdef DDLA_USE_GPU_CPU_TUNNEL
@@ -437,15 +445,14 @@ bool ppotrf(
                         const int g_col = array_descA.indx_l2g_c(col_loc);
                         if(g_row >= g_col)
                             continue;
-                        BLAS_CHECK(deblasGemm(
-                            blasH, DEBLAS_OP_C, DEBLAS_OP_N,
+                        gemm<DdlaBackend::GPU, T>(ddla_handle, 'C', 'N',
                             row_remain, col_len, nb_real,
                             (T)-1.0,
                             d_block_col + row_offset * nb_real, nb_real,
                             d_block_row + col_offset * nb_real, nb_real,
                             (T)1.0,
                             A + row_loc + col_loc * lldA, lldA
-                        ));
+                        );
                     }
                 }
 
@@ -458,15 +465,14 @@ bool ppotrf(
                         const int g_row = array_descA.indx_l2g_r(row_loc);
                         if(g_row >= g_col)
                             continue;
-                        BLAS_CHECK(deblasGemm(
-                            blasH, DEBLAS_OP_C, DEBLAS_OP_N,
+                        gemm<DdlaBackend::GPU, T>(ddla_handle, 'C', 'N',
                             nb, col_remain, nb_real,
                             (T)-1.0,
                             d_block_col + row_offset * nb_real, nb_real,
                             d_block_row + col_offset * nb_real, nb_real,
                             (T)1.0,
                             A + row_loc + col_loc * lldA, lldA
-                        ));
+                        );
                     }
                 }
 
@@ -486,9 +492,9 @@ bool ppotrf(
                     }
                 }
                 if(i_batch_count > 0){
-                    DEVICE_CHECK(deviceMemcpyAsync(d_A_array, h_A_array.data(), i_batch_count * sizeof(T*), deviceMemcpyHostToDevice, stream));
-                    DEVICE_CHECK(deviceMemcpyAsync(d_B_array, h_B_array.data(), i_batch_count * sizeof(T*), deviceMemcpyHostToDevice, stream));
-                    DEVICE_CHECK(deviceMemcpyAsync(d_C_array, h_C_array.data(), i_batch_count * sizeof(T*), deviceMemcpyHostToDevice, stream));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(d_A_array, h_A_array.data(), i_batch_count * sizeof(T*), runtimeMemcpyHostToDevice, stream));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(d_B_array, h_B_array.data(), i_batch_count * sizeof(T*), runtimeMemcpyHostToDevice, stream));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(d_C_array, h_C_array.data(), i_batch_count * sizeof(T*), runtimeMemcpyHostToDevice, stream));
                     BLAS_CHECK(deblasGemmBatched(
                         blasH, DEBLAS_OP_C, DEBLAS_OP_N,
                         nb, nb, nb_real, -1.0,
@@ -500,13 +506,27 @@ bool ppotrf(
                 }
             }
         }
-        DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+        RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
     }
     // printf("myid:%d, end\n", ddla_handle->myid);
     cleanup_device_buffers();
     return is_nega;
 
 }
+
+template bool ppotrf<float>(
+    const char& uplo, const int& n,
+    float* A, const int& ia, const int& ja, const DdlaDesc& array_descA,
+    int& info, // host pointer
+    bool is_head, int location
+);
+
+template bool ppotrf<double>(
+    const char& uplo, const int& n,
+    double* A, const int& ia, const int& ja, const DdlaDesc& array_descA,
+    int& info, // host pointer
+    bool is_head, int location
+);
 
 template bool ppotrf<std::complex<float>>(
     const char& uplo, const int& n,

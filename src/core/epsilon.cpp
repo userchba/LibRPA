@@ -659,10 +659,10 @@ CorrEnergy compute_RPA_correlation_blacs_2d_gamma_only(Chi0 &chi0, atpair_k_cplx
     if(use_gpu_replace_scalapack)
     {
         desc_nabf_nabf_opt.set_ddla_desc(blacs_h.ddla_handle);
-        DEVICE_CHECK(deviceMallocAsync((void**)&chi0_block_ptr, chi0_block.size() * sizeof(double), blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceMallocAsync((void**)&coul_block_ptr, coul_block.size() * sizeof(double), blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceMallocAsync((void**)&coul_chi0_block_ptr, coul_chi0_block.size() * sizeof(double), blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceMallocAsync((void**)&ipiv_ptr, ipiv.size() * sizeof(int), blacs_h.ddla_handle->stream));
+        RUNTIME_CHECK(runtimeMallocAsync((void**)&chi0_block_ptr, chi0_block.size() * sizeof(double), DeviceConnector::stream(blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeMallocAsync((void**)&coul_block_ptr, coul_block.size() * sizeof(double), DeviceConnector::stream(blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeMallocAsync((void**)&coul_chi0_block_ptr, coul_chi0_block.size() * sizeof(double), DeviceConnector::stream(blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeMallocAsync((void**)&ipiv_ptr, ipiv.size() * sizeof(int), DeviceConnector::stream(blacs_h.ddla_handle)));
     }
     else
 #endif
@@ -809,8 +809,8 @@ CorrEnergy compute_RPA_correlation_blacs_2d_gamma_only(Chi0 &chi0, atpair_k_cplx
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
             if (use_gpu_replace_scalapack)
             {
-                DEVICE_CHECK(deviceMemcpyAsync(chi0_block_ptr, chi0_block.ptr(), chi0_block.size() * sizeof(double), deviceMemcpyHostToDevice, blacs_h.ddla_handle->stream));
-                DEVICE_CHECK(deviceMemcpyAsync(coul_block_ptr, coul_block.ptr(), coul_block.size() * sizeof(double), deviceMemcpyHostToDevice, blacs_h.ddla_handle->stream));
+                RUNTIME_CHECK(runtimeMemcpyAsync(chi0_block_ptr, chi0_block.ptr(), chi0_block.size() * sizeof(double), runtimeMemcpyHostToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
+                RUNTIME_CHECK(runtimeMemcpyAsync(coul_block_ptr, coul_block.ptr(), coul_block.size() * sizeof(double), runtimeMemcpyHostToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
             }
 #endif
             double pi_begin = omp_get_wtime();
@@ -824,8 +824,8 @@ CorrEnergy compute_RPA_correlation_blacs_2d_gamma_only(Chi0 &chi0, atpair_k_cplx
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
             if (use_gpu_replace_scalapack)
             {
-                DEVICE_CHECK(deviceMemcpyAsync(coul_chi0_block.ptr(), coul_chi0_block_ptr, coul_chi0_block.size() * sizeof(double), deviceMemcpyDeviceToHost, blacs_h.ddla_handle->stream));
-                DEVICE_CHECK(deviceStreamSynchronize(blacs_h.ddla_handle->stream));
+                RUNTIME_CHECK(runtimeMemcpyAsync(coul_chi0_block.ptr(), coul_chi0_block_ptr, coul_chi0_block.size() * sizeof(double), runtimeMemcpyDeviceToHost, DeviceConnector::stream(blacs_h.ddla_handle)));
+                RUNTIME_CHECK(runtimeStreamSynchronize(DeviceConnector::stream(blacs_h.ddla_handle)));
             }
 #endif
             for (int i = 0; i != n_abf; i++)
@@ -841,8 +841,8 @@ CorrEnergy compute_RPA_correlation_blacs_2d_gamma_only(Chi0 &chi0, atpair_k_cplx
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
             if (use_gpu_replace_scalapack)
             {
-                DEVICE_CHECK(deviceMemcpyAsync(coul_chi0_block.ptr(), coul_chi0_block_ptr, coul_chi0_block.size() * sizeof(double), deviceMemcpyDeviceToHost, blacs_h.ddla_handle->stream));
-                DEVICE_CHECK(deviceStreamSynchronize(blacs_h.ddla_handle->stream));
+                RUNTIME_CHECK(runtimeMemcpyAsync(coul_chi0_block.ptr(), coul_chi0_block_ptr, coul_chi0_block.size() * sizeof(double), runtimeMemcpyDeviceToHost, DeviceConnector::stream(blacs_h.ddla_handle)));
+                RUNTIME_CHECK(runtimeStreamSynchronize(DeviceConnector::stream(blacs_h.ddla_handle)));
             }
 #endif
             assert(info == 0);
@@ -889,10 +889,10 @@ CorrEnergy compute_RPA_correlation_blacs_2d_gamma_only(Chi0 &chi0, atpair_k_cplx
     }
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
     if(use_gpu_replace_scalapack){
-        DEVICE_CHECK(deviceFreeAsync(chi0_block_ptr, blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceFreeAsync(coul_block_ptr, blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceFreeAsync(coul_chi0_block_ptr, blacs_h.ddla_handle->stream));
-        DEVICE_CHECK(deviceFreeAsync(ipiv_ptr, blacs_h.ddla_handle->stream));
+        RUNTIME_CHECK(runtimeFreeAsync(chi0_block_ptr, DeviceConnector::stream(blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeFreeAsync(coul_block_ptr, DeviceConnector::stream(blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeFreeAsync(coul_chi0_block_ptr, DeviceConnector::stream(blacs_h.ddla_handle)));
+        RUNTIME_CHECK(runtimeFreeAsync(ipiv_ptr, DeviceConnector::stream(blacs_h.ddla_handle)));
     }
 
 #endif
@@ -2618,7 +2618,7 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
     if (use_gpu_replace_scalapack)
     {
         desc_nabf_nabf_opt.set_ddla_desc(blacs_h.ddla_handle); // set the descriptor for the device
-        DEVICE_CHECK(deviceMallocAsync((void**)&chi0_block_ptr, chi0_block.size() * sizeof(std::complex<double>), blacs_h.ddla_handle->stream));
+        RUNTIME_CHECK(runtimeMallocAsync((void**)&chi0_block_ptr, chi0_block.size() * sizeof(std::complex<double>), DeviceConnector::stream(blacs_h.ddla_handle)));
     }
     else
 #endif
@@ -2797,7 +2797,7 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
             {
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
                 if(use_gpu_replace_scalapack)
-                    DEVICE_CHECK(deviceMallocAsync((void**)&coul_block_ptr, coul_block.size() * sizeof(std::complex<double>), blacs_h.ddla_handle->stream));
+                    RUNTIME_CHECK(runtimeMallocAsync((void**)&coul_block_ptr, coul_block.size() * sizeof(std::complex<double>), DeviceConnector::stream(blacs_h.ddla_handle)));
 #endif
                 LaConnector::power_hemat_la(
                     coulwc_block, desc_nabf_nabf_opt, coul_eigen_block, desc_nabf_nabf_opt,
@@ -2889,7 +2889,7 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
                 (double*)chi0_block_ptr, (double*)coul_chi0_block_ptr);
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
             if(use_gpu_replace_scalapack)
-                DEVICE_CHECK(deviceMallocAsync((void**)&coul_block_ptr, coul_block.size() * sizeof(std::complex<double>), blacs_h.ddla_handle->stream));
+                RUNTIME_CHECK(runtimeMallocAsync((void**)&coul_block_ptr, coul_block.size() * sizeof(std::complex<double>), DeviceConnector::stream(blacs_h.ddla_handle)));
 #endif
             if (replace_w_head && option_dielect_func == 3)
             {
@@ -2915,11 +2915,24 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
         librpa_int::global::lib_printf_root("Time to prepare sqrt root of Coulomb for Epsilon(q) (seconds, Wall/CPU): %f %f\n",
                 global::profiler.get_wall_time_last("epsilon_prepare_couleps_sqrt"),
                 global::profiler.get_cpu_time_last("epsilon_prepare_couleps_sqrt"));
+        if (is_gamma_point(q))
+        {
+            // Diagnostic for the head-only eigenbasis Cholesky path: n_singular
+            // > 0 is exactly the condition under which the padding region
+            // beyond the leading n_nonsingular block exists at all. The
+            // process grid shape matters for LibDDLA sub-matrix coverage --
+            // its own tests and ours so far only exercised square grids.
+            librpa_int::global::lib_printf_root(
+                "Gamma-point Coulomb sqrt truncation: n_abf=%d n_nonsingular=%zu n_singular=%zu "
+                "blacs_grid=%dx%d\n",
+                n_abf, n_nonsingular, n_singular,
+                desc_nabf_nabf_opt.nprows(), desc_nabf_nabf_opt.npcols());
+        }
         if (debug_output) ofs_myid << get_timestamp() << " Done couleps sqrt\n";
         std::flush(ofs_myid);
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
         if(use_gpu_replace_scalapack)
-            DEVICE_CHECK(deviceMallocAsync((void**)&coul_chi0_block_ptr, coul_chi0_block.size() * sizeof(std::complex<double>), blacs_h.ddla_handle->stream));
+            RUNTIME_CHECK(runtimeMallocAsync((void**)&coul_chi0_block_ptr, coul_chi0_block.size() * sizeof(std::complex<double>), DeviceConnector::stream(blacs_h.ddla_handle)));
 #endif    
         for (const auto &freq : chi0.tfg.get_freq_nodes())
         {
@@ -3030,11 +3043,19 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
             if (use_gpu_replace_scalapack)
             {
-                DEVICE_CHECK(deviceMemcpyAsync(chi0_block_ptr, chi0_block.ptr(), chi0_block.size() * sizeof(complex<double>), deviceMemcpyHostToDevice, blacs_h.ddla_handle->stream));
+                RUNTIME_CHECK(runtimeMemcpyAsync(chi0_block_ptr, chi0_block.ptr(), chi0_block.size() * sizeof(complex<double>), runtimeMemcpyHostToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
             }
 #endif
             // for Gamma point, overwrite the head term
-            if (epsmac_LF_imagfreq.size() > 0 && is_gamma_point(q))
+            const bool gamma_epsmac = epsmac_LF_imagfreq.size() > 0 && is_gamma_point(q);
+            // Head-only correction (as opposed to the option-3 full head/wing
+            // rewrite, which already inverts epsilon itself before this
+            // point). This is the case the head-aware Cholesky targets: the
+            // head channel is a genuine eigenbasis index here, so it can be
+            // solved with LibDDLA's is_head/location instead of rotating
+            // back to the ABF basis first.
+            const bool gamma_head_only = gamma_epsmac && option_dielect_func != 3;
+            if (gamma_epsmac)
             {
                 profiler.start("epsilon_compute_eps", "Compute dielectric matrix");
 
@@ -3043,7 +3064,7 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
                 if (use_gpu_replace_scalapack)
                 {
                     sqrtveig_blacs_ptr = coul_block_ptr;
-                    DEVICE_CHECK(deviceMemcpyAsync(sqrtveig_blacs_ptr, sqrtveig_blacs.ptr(), sqrtveig_blacs.size() * sizeof(complex<double>), deviceMemcpyHostToDevice, blacs_h.ddla_handle->stream));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(sqrtveig_blacs_ptr, sqrtveig_blacs.ptr(), sqrtveig_blacs.size() * sizeof(complex<double>), runtimeMemcpyHostToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
                 }
                 else
 #endif
@@ -3059,6 +3080,32 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
                     'N', 'N', n_abf, n_nonsingular, n_abf, {1.0, 0.0}, chi0_block_ptr, 1, 1,
                     desc_nabf_nabf_opt, sqrtveig_blacs_ptr, 1, 1, desc_nabf_nabf_opt,
                     {0.0, 0.0}, coul_chi0_block_ptr, 1, 1, desc_nabf_nabf_opt);
+                if (gamma_head_only && use_cholesky_gw_wc)
+                {
+                    // chi0_block_ptr's role as "full ABF-basis chi0" ended
+                    // with the pgemm just above (its only remaining read).
+                    // The pgemm below writes the leading n_nonsingular x
+                    // n_nonsingular block of chi0_block_ptr with beta=0, but
+                    // never touches anything outside that block -- so
+                    // without this, entries with row or column index >=
+                    // n_nonsingular would keep holding stale raw chi0. The
+                    // n_nonsingular-order solve below (LibDDLA leading-block
+                    // sub-matrix support) never reads that region either way,
+                    // so this clear is defensive hygiene rather than a
+                    // correctness requirement -- kept so chi0_block_ptr's
+                    // full extent is always in a well-defined state,
+                    // independent of which solve order is in force.
+#if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
+                    if (use_gpu_replace_scalapack)
+                    {
+                        RUNTIME_CHECK(runtimeMemsetAsync(chi0_block_ptr, 0, chi0_block.size() * sizeof(complex<double>), DeviceConnector::stream(blacs_h.ddla_handle)));
+                    }
+                    else
+#endif
+                    {
+                        memset(chi0_block_ptr, 0, chi0_block.size() * sizeof(complex<double>));
+                    }
+                }
                 LaConnector::pgemm(
                     'C', 'N', n_nonsingular, n_nonsingular, n_abf, {-1.0, 0.0},
                     sqrtveig_blacs_ptr, 1, 1, desc_nabf_nabf_opt, coul_chi0_block_ptr,
@@ -3069,8 +3116,8 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
                     if (use_gpu_replace_scalapack)
                     {
-                        DEVICE_CHECK(deviceMemcpyAsync(chi0_block.ptr(), chi0_block_ptr, chi0_block.size() * sizeof(complex<double>), deviceMemcpyDeviceToHost, blacs_h.ddla_handle->stream));
-                        DEVICE_CHECK(deviceStreamSynchronize(blacs_h.ddla_handle->stream));
+                        RUNTIME_CHECK(runtimeMemcpyAsync(chi0_block.ptr(), chi0_block_ptr, chi0_block.size() * sizeof(complex<double>), runtimeMemcpyDeviceToHost, DeviceConnector::stream(blacs_h.ddla_handle)));
+                        RUNTIME_CHECK(runtimeStreamSynchronize(DeviceConnector::stream(blacs_h.ddla_handle)));
                     }
 #endif
                     const int n_nonsingular_int = as_int(n_nonsingular);
@@ -3095,7 +3142,7 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
                 if (use_gpu_replace_scalapack)
                 {
-                    DEVICE_CHECK(deviceMemcpyAsync(chi0_block_ptr, chi0_block.ptr(), chi0_block.size() * sizeof(complex<double>), deviceMemcpyHostToDevice, blacs_h.ddla_handle->stream));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(chi0_block_ptr, chi0_block.ptr(), chi0_block.size() * sizeof(complex<double>), runtimeMemcpyHostToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
                 }
 #endif
                     // if (debug)
@@ -3116,46 +3163,74 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
                         const std::complex<double> head_correction = epsmac_LF_imagfreq[ifreq] - 1.0;
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
                     if(use_gpu_replace_scalapack){
-                        DEVICE_CHECK(deviceMemcpyAsync(chi0_block_ptr + ilo + jlo * desc_nabf_nabf_opt.lld(), &head_correction, sizeof(std::complex<double>), deviceMemcpyHostToDevice, blacs_h.ddla_handle->stream));
+                        RUNTIME_CHECK(runtimeMemcpyAsync(chi0_block_ptr + ilo + jlo * desc_nabf_nabf_opt.lld(), &head_correction, sizeof(std::complex<double>), runtimeMemcpyHostToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
                     }else
 #endif
                         chi0_block(ilo, jlo) = head_correction;
                     }
                 }
                 global::profiler.stop("epsilon_compute_eps_pgemm_1");
-                // rotate back to ABF
+                // Coulomb eigenvector matrix U is needed both to rotate back
+                // to the ABF basis (below) and, for the head-only route with
+                // the head-aware Cholesky, to build the eigenbasis solve's
+                // RHS/output projections later -- prepare it unconditionally.
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
                 if (use_gpu_replace_scalapack)
                 {
                     coul_eigen_block_ptr = coul_block_ptr; // reuse device buffer, sqrtveig no longer needed
-                    DEVICE_CHECK(deviceMemcpyAsync(coul_eigen_block_ptr, coul_eigen_block.ptr(), coul_eigen_block.size() * sizeof(complex<double>), deviceMemcpyHostToDevice, blacs_h.ddla_handle->stream));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(coul_eigen_block_ptr, coul_eigen_block.ptr(), coul_eigen_block.size() * sizeof(complex<double>), runtimeMemcpyHostToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
                 }
 #endif
-                global::profiler.start("epsilon_compute_eps_pgemm_2", LIBRPA_VERBOSE_DEBUG);
-                LaConnector::pgemm('N', 'N', n_abf, n_nonsingular, n_nonsingular, {1.0, 0.0},
-                        coul_eigen_block_ptr, 1, 1, desc_nabf_nabf_opt,
-                        chi0_block_ptr, 1, 1, desc_nabf_nabf_opt, {0.0, 0.0},
-                        coul_chi0_block_ptr, 1, 1, desc_nabf_nabf_opt);
-                LaConnector::pgemm('N', 'C', n_abf, n_abf, n_nonsingular, {1.0, 0.0},
-                        coul_chi0_block_ptr, 1, 1, desc_nabf_nabf_opt,
-                        coul_eigen_block_ptr, 1, 1, desc_nabf_nabf_opt, {0.0, 0.0},
-                        chi0_block_ptr, 1, 1, desc_nabf_nabf_opt);
-                global::profiler.stop("epsilon_compute_eps_pgemm_2");
-
-                if (option_dielect_func != 3)
+                if (gamma_head_only && use_cholesky_gw_wc)
                 {
-                    // now chi0_block is actually -v1/2 chi v1/2
-                    LaConnector::pdam(1.0, chi0_block_ptr, desc_nabf_nabf_opt);
-                    // now chi0_block is actually the dielectric matrix
+                    // Keep epsilon in the Coulomb eigenbasis instead of
+                    // rotating back to ABF. The head channel is exactly
+                    // eigenbasis index 0 here (descending eigenvalue order,
+                    // see power_hemat_blacs_real), so it can be handed to
+                    // LibDDLA's head-aware Cholesky (is_head/location) as a
+                    // genuine matrix index -- something the ABF-space
+                    // rank-1-direction form cannot express. chi0_block's
+                    // leading n_nonsingular x n_nonsingular block currently
+                    // holds D = -sqrtV^H*chi*sqrtV with D(0,0) already
+                    // overwritten to (epsmac - 1) above; add +1 to just that
+                    // leading block so it becomes E_ns = I_ns + D, i.e.
+                    // epsilon projected into the non-singular eigenbasis.
+                    // The solve below now runs at genuine n_nonsingular
+                    // logical order (LibDDLA's leading-block sub-matrix
+                    // support), so the padding beyond n_nonsingular is never
+                    // read by anything in this branch -- it is zeroed above
+                    // only for defined-state hygiene, not for correctness.
+                    LaConnector::pdam(1.0, chi0_block_ptr, desc_nabf_nabf_opt, as_int(n_nonsingular));
+                }
+                else
+                {
+                    // rotate back to ABF
+                    global::profiler.start("epsilon_compute_eps_pgemm_2", LIBRPA_VERBOSE_DEBUG);
+                    LaConnector::pgemm('N', 'N', n_abf, n_nonsingular, n_nonsingular, {1.0, 0.0},
+                            coul_eigen_block_ptr, 1, 1, desc_nabf_nabf_opt,
+                            chi0_block_ptr, 1, 1, desc_nabf_nabf_opt, {0.0, 0.0},
+                            coul_chi0_block_ptr, 1, 1, desc_nabf_nabf_opt);
+                    LaConnector::pgemm('N', 'C', n_abf, n_abf, n_nonsingular, {1.0, 0.0},
+                            coul_chi0_block_ptr, 1, 1, desc_nabf_nabf_opt,
+                            coul_eigen_block_ptr, 1, 1, desc_nabf_nabf_opt, {0.0, 0.0},
+                            chi0_block_ptr, 1, 1, desc_nabf_nabf_opt);
+                    global::profiler.stop("epsilon_compute_eps_pgemm_2");
+
+                    if (option_dielect_func != 3)
+                    {
+                        // now chi0_block is actually -v1/2 chi v1/2
+                        LaConnector::pdam(1.0, chi0_block_ptr, desc_nabf_nabf_opt);
+                        // now chi0_block is actually the dielectric matrix
+                    }
                 }
                 profiler.stop("epsilon_compute_eps");
             }
-            else // !(epsmac_LF_imagfreq.size() > 0 && is_gamma_point(q))
+            else // !gamma_epsmac
             {
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
                 if (use_gpu_replace_scalapack)
                 {
-                    DEVICE_CHECK(deviceMemcpyAsync(coul_block_ptr, coul_block.ptr(), coul_block.size() * sizeof(std::complex<double>), deviceMemcpyHostToDevice, blacs_h.ddla_handle->stream));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(coul_block_ptr, coul_block.ptr(), coul_block.size() * sizeof(std::complex<double>), runtimeMemcpyHostToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
                 }
 #endif
                 profiler.start("epsilon_compute_eps", "Compute dielectric matrix");
@@ -3221,7 +3296,7 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
                 if(use_gpu_replace_scalapack)
                 {
                     coulwc_block_ptr = coul_block_ptr;
-                    DEVICE_CHECK(deviceMemcpyAsync(coulwc_block_ptr, coulwc_block.ptr(), coulwc_block.size() * sizeof(complex<double>), deviceMemcpyHostToDevice, blacs_h.ddla_handle->stream));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(coulwc_block_ptr, coulwc_block.ptr(), coulwc_block.size() * sizeof(complex<double>), runtimeMemcpyHostToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
                 }
 #endif
                 LaConnector::pdam(-1.0, chi0_block_ptr, desc_nabf_nabf_opt);
@@ -3237,6 +3312,139 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
                         chi0_block_ptr, 1, 1, desc_nabf_nabf_opt);
                 global::profiler.stop("epsilon_multiply_coulwc_1");
             }
+            else if (gamma_head_only && use_cholesky_gw_wc)
+            {
+                // Head-aware Cholesky route. chi0_block_ptr's leading
+                // n_nonsingular x n_nonsingular block currently holds
+                // E_ns = I_ns + D = U_ns^H * eps_ABF * U_ns -- see the
+                // gamma_head_only branch above. Solve at genuine
+                // n_nonsingular logical order (LibDDLA's leading-block
+                // sub-matrix support, verified against a dedicated padded-
+                // descriptor test) instead of the full n_abf order, so the
+                // head is a real matrix index for LibDDLA's is_head/location
+                // Cholesky, the solve itself is O(n_nonsingular^3) instead of
+                // O(n_abf^3), and the truncated/singular directions are
+                // never touched at all (rather than padded to identity and
+                // carried through). U_ns (the leading n_nonsingular columns
+                // of the orthonormal Utilde) satisfies U_ns^H*U_ns = I_ns, so
+                // this is an exact rewrite of "solve eps_ABF * X =
+                // sqrt(Vwc)", not an approximation -- the truncated
+                // directions contribute nothing because eps_ABF is exactly
+                // identity there:
+                //   Rtilde = U_ns^H * sqrt(Vwc)               (n_ns x n_abf)
+                //   Ytilde = E_ns^-1 * Rtilde       (solve, n_ns-order)
+                //   X      = U_ns * Ytilde                    (n_abf x n_abf)
+                //   Wc     = sqrt(Vwc) * (X - sqrt(Vwc))
+                global::profiler.start("epsilon_solver_coulwc_1", "epsilon_solver_coulwc",
+                                       LIBRPA_VERBOSE_DEBUG);
+                auto head_coulwc_block = init_local_mat<complex<double>>(desc_nabf_nabf_opt, MAJOR::COL);
+                std::complex<double> *head_coulwc_ptr = head_coulwc_block.ptr();
+#if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
+                if (use_gpu_replace_scalapack)
+                {
+                    RUNTIME_CHECK(runtimeMallocAsync((void**)&head_coulwc_ptr, head_coulwc_block.size() * sizeof(std::complex<double>), DeviceConnector::stream(blacs_h.ddla_handle)));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(head_coulwc_ptr, coulwc_block.ptr(), coulwc_block.size() * sizeof(std::complex<double>), runtimeMemcpyHostToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
+                }
+                else
+#endif
+                memcpy(head_coulwc_ptr, coulwc_block.ptr(), coulwc_block.size() * sizeof(std::complex<double>));
+
+                const int n_nonsingular_int = as_int(n_nonsingular);
+                global::profiler.start("epsilon_gamma_head_cholesky_projection", LIBRPA_VERBOSE_DEBUG);
+                // Rtilde = U_ns^H * sqrt(Vwc): M=n_nonsingular selects only
+                // the leading n_nonsingular columns of coul_eigen_block_ptr
+                // (Utilde) as the effective 'C'-transposed left operand, so
+                // the output only occupies the leading n_nonsingular rows of
+                // coul_chi0_block_ptr's descriptor -- the free scratch whose
+                // previous content, the eigenbasis rotation intermediate
+                // used to form D above, is no longer needed. Rows
+                // n_nonsingular..n_abf of that buffer are left stale, which
+                // is fine: nothing below reads them.
+                LaConnector::pgemm('C', 'N', n_nonsingular_int, n_abf, n_abf, {1.0, 0.0},
+                                   coul_eigen_block_ptr, 1, 1, desc_nabf_nabf_opt,
+                                   head_coulwc_ptr, 1, 1, desc_nabf_nabf_opt,
+                                   {0.0, 0.0}, coul_chi0_block_ptr, 1, 1, desc_nabf_nabf_opt);
+                global::profiler.stop("epsilon_gamma_head_cholesky_projection");
+
+                global::profiler.start("epsilon_gamma_head_cholesky_solve", LIBRPA_VERBOSE_DEBUG);
+                int info = 0;
+                // n_nonsingular_int is the logical solve order: LibDDLA's
+                // ppotrf/ppotrs/pposv derive all local extents (and the
+                // head-tolerance/loop bound) from this logical n rather than
+                // desc_nabf_nabf_opt's own m()/n(), so factoring only
+                // touches the leading n_nonsingular x n_nonsingular block --
+                // confirmed against a dedicated padded-descriptor test
+                // (test_ppotrf_head_submatrix, location=1, up to n=85) before
+                // relying on it here. location=1 is the 1-based global index
+                // of the head channel within this n_nonsingular-order solve;
+                // LibDDLA symmetrically permutes it to the last position,
+                // factors the leading (n_nonsingular-1) block normally, and
+                // tolerates one negative pivot at the swapped-in last
+                // position. nrhs stays n_abf: Rtilde has n_abf columns.
+#if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
+                if (use_gpu_replace_scalapack)
+                {
+                    LaConnector::pposv('L', 'L', 'N', n_nonsingular_int, n_abf, chi0_block_ptr, 1, 1,
+                                       desc_nabf_nabf_opt, coul_chi0_block_ptr, 1, 1,
+                                       desc_nabf_nabf_opt, info, /*is_head=*/true, /*location=*/1);
+                }
+                else
+#endif
+                {
+                    // ScaLAPACK has no head-aware Cholesky; fall back to LU
+                    // on the host so the eigenbasis restructuring itself is
+                    // still exercised (and cross-checkable) on CPU. Standard
+                    // ScaLAPACK sub-matrix addressing (ia=ja=1 with a
+                    // logical order smaller than the descriptor) needs no
+                    // special handling here.
+                    LaConnector::pgesv(n_nonsingular_int, n_abf, chi0_block_ptr, 1, 1,
+                                       desc_nabf_nabf_opt, coul_chi0_block_ptr, 1, 1,
+                                       desc_nabf_nabf_opt, info);
+                }
+                global::profiler.stop("epsilon_gamma_head_cholesky_solve");
+                if (info != 0)
+                {
+                    std::ostringstream oss;
+                    oss << "Gamma head-only dielectric "
+                        << (use_gpu_replace_scalapack ? "head-aware Cholesky" : "LU")
+                        << " solve failed with info=" << info;
+                    throw LIBRPA_RUNTIME_ERROR(oss.str());
+                }
+                // coul_chi0_block_ptr's leading n_nonsingular rows now hold
+                // Ytilde = E_ns^-1 * Rtilde. Rotate back to ABF: X = U_ns *
+                // Ytilde -- K=n_nonsingular contracts over exactly those
+                // rows and the matching leading n_nonsingular columns of
+                // Utilde -- into the now-free chi0_block_ptr (its E_ns
+                // content was destroyed by the solve above).
+                LaConnector::pgemm('N', 'N', n_abf, n_abf, n_nonsingular_int, {1.0, 0.0},
+                                   coul_eigen_block_ptr, 1, 1, desc_nabf_nabf_opt,
+                                   coul_chi0_block_ptr, 1, 1, desc_nabf_nabf_opt,
+                                   {0.0, 0.0}, chi0_block_ptr, 1, 1, desc_nabf_nabf_opt);
+                LaConnector::axpy(head_coulwc_block.size(), {-1.0, 0.0}, head_coulwc_ptr, 1, chi0_block_ptr, 1, blacs_h);
+                global::profiler.stop("epsilon_solver_coulwc_1");
+
+                global::profiler.start("epsilon_multiply_coulwc_2",
+                                       "Multiply truncated Coulomb", LIBRPA_VERBOSE_DEBUG);
+                // Wc = sqrt(Vwc) * (X - sqrt(Vwc)), written into the free
+                // coul_chi0_block_ptr (Ytilde is no longer needed), then
+                // copied into chi0_block_ptr so the shared tail code below
+                // (which reads chi0_block_ptr/chi0_block unconditionally)
+                // sees the result exactly as the other branches leave it.
+                LaConnector::pgemm('N', 'N', n_abf, n_abf, n_abf, {1.0, 0.0}, head_coulwc_ptr, 1,
+                                   1, desc_nabf_nabf_opt, chi0_block_ptr, 1, 1,
+                                   desc_nabf_nabf_opt, {0.0, 0.0}, coul_chi0_block_ptr, 1, 1,
+                                   desc_nabf_nabf_opt);
+#if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
+                if (use_gpu_replace_scalapack)
+                {
+                    RUNTIME_CHECK(runtimeMemcpyAsync(chi0_block_ptr, coul_chi0_block_ptr, chi0_block.size() * sizeof(std::complex<double>), runtimeMemcpyDeviceToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
+                    RUNTIME_CHECK(runtimeFreeAsync(head_coulwc_ptr, DeviceConnector::stream(blacs_h.ddla_handle)));
+                }
+                else
+#endif
+                memcpy(chi0_block_ptr, coul_chi0_block_ptr, chi0_block.size() * sizeof(std::complex<double>));
+                global::profiler.stop("epsilon_multiply_coulwc_2");
+            }
             else
             {
                 // Solve epsilon * X = sqrt(Vc), then form sqrt(Vc) * (X - sqrt(Vc)).
@@ -3246,8 +3454,8 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
                 if (use_gpu_replace_scalapack)
                 {
                     coulwc_block_ptr = coul_block_ptr;
-                    DEVICE_CHECK(deviceMemcpyAsync(coulwc_block_ptr, coulwc_block.ptr(), coulwc_block.size() * sizeof(std::complex<double>), deviceMemcpyHostToDevice, blacs_h.ddla_handle->stream));
-                    DEVICE_CHECK(deviceMemcpyAsync(coul_chi0_block_ptr, coulwc_block_ptr, coulwc_block.size() * sizeof(std::complex<double>), deviceMemcpyDeviceToDevice, blacs_h.ddla_handle->stream));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(coulwc_block_ptr, coulwc_block.ptr(), coulwc_block.size() * sizeof(std::complex<double>), runtimeMemcpyHostToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(coul_chi0_block_ptr, coulwc_block_ptr, coulwc_block.size() * sizeof(std::complex<double>), runtimeMemcpyDeviceToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
                 }
                 else
 #endif
@@ -3265,7 +3473,13 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
                                        desc_nabf_nabf_opt, coul_chi0_block_ptr, 1, 1,
                                        desc_nabf_nabf_opt, info);
                 }
-                assert(info == 0);
+                if (info != 0)
+                {
+                    std::ostringstream oss;
+                    oss << "Dielectric " << (use_cholesky_gw_wc ? "Cholesky" : "LU")
+                        << " solve failed with info=" << info;
+                    throw LIBRPA_RUNTIME_ERROR(oss.str());
+                }
                 LaConnector::axpy(coulwc_block.size(), {-1.0, 0.0}, coulwc_block_ptr, 1, coul_chi0_block_ptr, 1, blacs_h);
                 global::profiler.stop("epsilon_solver_coulwc_1");
 
@@ -3281,11 +3495,11 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
             if (use_gpu_replace_scalapack)
             {
-                DEVICE_CHECK(deviceMemcpyAsync(chi0_block.ptr(), chi0_block_ptr,
+                RUNTIME_CHECK(runtimeMemcpyAsync(chi0_block.ptr(), chi0_block_ptr,
                                                 chi0_block.size() * sizeof(complex<double>),
-                                                deviceMemcpyDeviceToHost,
-                                                blacs_h.ddla_handle->stream));
-                DEVICE_CHECK(deviceStreamSynchronize(blacs_h.ddla_handle->stream));
+                                                runtimeMemcpyDeviceToHost,
+                                                DeviceConnector::stream(blacs_h.ddla_handle)));
+                RUNTIME_CHECK(runtimeStreamSynchronize(DeviceConnector::stream(blacs_h.ddla_handle)));
             }
 #endif
             // convert back to initial distribution
@@ -3305,8 +3519,8 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
         if(use_gpu_replace_scalapack)
         {
-            DEVICE_CHECK(deviceFreeAsync(coul_chi0_block_ptr, blacs_h.ddla_handle->stream));
-            DEVICE_CHECK(deviceFreeAsync(coul_block_ptr, blacs_h.ddla_handle->stream));
+            RUNTIME_CHECK(runtimeFreeAsync(coul_chi0_block_ptr, DeviceConnector::stream(blacs_h.ddla_handle)));
+            RUNTIME_CHECK(runtimeFreeAsync(coul_block_ptr, DeviceConnector::stream(blacs_h.ddla_handle)));
         }
 
 #endif
@@ -3317,7 +3531,7 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
     #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
     if (use_gpu_replace_scalapack)
     {
-        DEVICE_CHECK(deviceFreeAsync(chi0_block_ptr, blacs_h.ddla_handle->stream));
+        RUNTIME_CHECK(runtimeFreeAsync(chi0_block_ptr, DeviceConnector::stream(blacs_h.ddla_handle)));
     }
     #endif
     global::profiler.stop("compute_Wc_freq_q_work");

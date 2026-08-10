@@ -1,4 +1,5 @@
 #include "api_grid_test_common.h"
+#include "ddla_stream_impl.h"   // for set_local_device — internal test only
 
 using namespace api_grid_test;
 
@@ -19,11 +20,11 @@ void run_factorization_case(const ddla::DdlaHandle_t& handle,
     });
     DeviceBuffer<Complex> d_A(handle, h_A.size());
     upload(handle, d_A.ptr, h_A);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
 
     int info = -1;
     factorize(d_A.ptr, descA, info);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
     require_close(handle, name + "(info)", std::abs(info), 0.0);
 }
 
@@ -68,7 +69,7 @@ int main(int argc, char** argv)
         ddla::ddla_init(handle);
 
         int device_count = 0;
-        DEVICE_CHECK(deviceGetDeviceCount(&device_count));
+        RUNTIME_CHECK(runtimeGetDeviceCount(&device_count));
         if(device_count <= 0){
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
@@ -93,7 +94,7 @@ int main(int argc, char** argv)
                 ddla::pgetrf_nopiv(descA.m(), descA.n(), d_A, descA, info);
             });
 
-        DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+        check_ddla_sync(handle);
         ddla::ddla_destroy(handle);
 
         if(world_rank == 0){

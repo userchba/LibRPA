@@ -4,7 +4,7 @@
 #include <complex>
 #include <ddla/ddla.h>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
 
 using namespace ddla;
 
@@ -21,17 +21,17 @@ void check_pdam(int n, const DdlaHandle_t& handle, const T1& alpha)
 
     T2* d_A = nullptr;
     if (nelem > 0) {
-        DEVICE_CHECK(deviceMallocAsync(reinterpret_cast<void**>(&d_A), nelem * sizeof(T2), handle->stream));
-        DEVICE_CHECK(deviceMemsetAsync(d_A, 0, nelem * sizeof(T2), handle->stream));
+        RUNTIME_CHECK(runtimeMallocAsync(reinterpret_cast<void**>(&d_A), nelem * sizeof(T2), handle->stream));
+        RUNTIME_CHECK(runtimeMemsetAsync(d_A, 0, nelem * sizeof(T2), handle->stream));
     }
 
     pdam(alpha, d_A, desc);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
 
     std::vector<T2> h_A(nelem);
     if (nelem > 0) {
-        DEVICE_CHECK(deviceMemcpyAsync(h_A.data(), d_A, nelem * sizeof(T2), deviceMemcpyDeviceToHost, handle->stream));
-        DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+        RUNTIME_CHECK(runtimeMemcpyAsync(h_A.data(), d_A, nelem * sizeof(T2), runtimeMemcpyDeviceToHost, handle->stream));
+        RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
     }
 
     const T2 expected = static_cast<T2>(alpha);
@@ -71,7 +71,7 @@ void check_pdam(int n, const DdlaHandle_t& handle, const T1& alpha)
     }
 
     if (nelem > 0) {
-        DEVICE_CHECK(deviceFreeAsync(d_A, handle->stream));
+        RUNTIME_CHECK(runtimeFreeAsync(d_A, handle->stream));
     }
 
     if (global_ok == 0) {

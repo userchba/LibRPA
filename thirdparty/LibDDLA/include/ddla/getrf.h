@@ -2,6 +2,7 @@
 #define GETRF_H
 
 #include "ddla_connector.h"
+#include <stdexcept>
 
 namespace ddla{
 
@@ -18,7 +19,7 @@ inline desolverStatus_t desolverGetrf(
     double *Workspace = nullptr;
     int Lwork;
 
-    deviceStream_t stream;
+    runtimeStream_t stream;
     SOLVER_CHECK(desolverGetStream(handle, &stream));
 
     #if defined(DDLA_USE_CUDA)
@@ -30,16 +31,19 @@ inline desolverStatus_t desolverGetrf(
     #endif
     
     if(Lwork > 0)
-        DEVICE_CHECK(deviceMallocAsync(&Workspace, Lwork * sizeof(double), stream));
+        RUNTIME_CHECK(runtimeMallocAsync(&Workspace, Lwork * sizeof(double), stream));
 
+    desolverStatus_t status{};
     #if defined(DDLA_USE_CUDA)
-    desolverStatus_t status = cusolverDnDgetrf(handle, m, n, A, lda, Workspace, devIpiv, devInfo);
+    status = cusolverDnDgetrf(handle, m, n, A, lda, Workspace, devIpiv, devInfo);
     #elif defined(DDLA_USE_HIP)
-    desolverStatus_t status = hipsolverDgetrf(handle, m, n, A, lda, Workspace, Lwork, devIpiv, devInfo);
+    status = hipsolverDgetrf(handle, m, n, A, lda, Workspace, Lwork, devIpiv, devInfo);
+    #else
+    throw std::runtime_error("ENABLE CUDA or ENABLE HIP not enable\n");
     #endif
 
     if(Lwork > 0)
-        DEVICE_CHECK(deviceFreeAsync(Workspace, stream));
+        RUNTIME_CHECK(runtimeFreeAsync(Workspace, stream));
     return status;
 }
 
@@ -53,10 +57,10 @@ inline desolverStatus_t desolverGetrf(
     int *devInfo
 )
 {
-    float *Workspace;
+    float *Workspace = nullptr;
     int Lwork;
 
-    deviceStream_t stream;
+    runtimeStream_t stream;
     SOLVER_CHECK(desolverGetStream(handle, &stream));
 
     #if defined(DDLA_USE_CUDA)
@@ -68,16 +72,19 @@ inline desolverStatus_t desolverGetrf(
     #endif
 
     if(Lwork > 0)
-        DEVICE_CHECK(deviceMallocAsync(&Workspace, Lwork * sizeof(float), stream));
+        RUNTIME_CHECK(runtimeMallocAsync(&Workspace, Lwork * sizeof(float), stream));
 
+    desolverStatus_t status{};
     #if defined(DDLA_USE_CUDA)
-    desolverStatus_t status = cusolverDnSgetrf(handle, m, n, A, lda, Workspace, devIpiv, devInfo);
+    status = cusolverDnSgetrf(handle, m, n, A, lda, Workspace, devIpiv, devInfo);
     #elif defined(DDLA_USE_HIP)
-    desolverStatus_t status = hipsolverSgetrf(handle, m, n, A, lda, Workspace, Lwork, devIpiv, devInfo);
+    status = hipsolverSgetrf(handle, m, n, A, lda, Workspace, Lwork, devIpiv, devInfo);
+    #else
+    throw std::runtime_error("ENABLE CUDA or ENABLE HIP not enable\n");
     #endif
 
     if(Lwork > 0)
-        DEVICE_CHECK(deviceFreeAsync(Workspace, stream));
+        RUNTIME_CHECK(runtimeFreeAsync(Workspace, stream));
     return status;
 }
 
@@ -94,7 +101,7 @@ inline desolverStatus_t desolverGetrf(
     std::complex<double> *Workspace = nullptr;
     int Lwork;
 
-    deviceStream_t stream;
+    runtimeStream_t stream;
     SOLVER_CHECK(desolverGetStream(handle, &stream));
 
     #if defined(DDLA_USE_CUDA)
@@ -105,15 +112,18 @@ inline desolverStatus_t desolverGetrf(
     throw std::runtime_error("not ENABLE CUDA and ENABLE HIP\n");
     #endif
     if(Lwork > 0)
-        DEVICE_CHECK(deviceMallocAsync(&Workspace, Lwork * sizeof(std::complex<double>), stream));
+        RUNTIME_CHECK(runtimeMallocAsync(&Workspace, Lwork * sizeof(std::complex<double>), stream));
 
+    desolverStatus_t status{};
     #if defined(DDLA_USE_CUDA)
-    desolverStatus_t status = cusolverDnZgetrf(handle, m, n, (cuDoubleComplex*)A, lda, (cuDoubleComplex*)Workspace, devIpiv, devInfo);
+    status = cusolverDnZgetrf(handle, m, n, (cuDoubleComplex*)A, lda, (cuDoubleComplex*)Workspace, devIpiv, devInfo);
     #elif defined(DDLA_USE_HIP)
-    desolverStatus_t status = hipsolverZgetrf(handle, m, n, (hipDoubleComplex*)A, lda, (hipDoubleComplex*)Workspace, Lwork, devIpiv, devInfo);
+    status = hipsolverZgetrf(handle, m, n, (hipDoubleComplex*)A, lda, (hipDoubleComplex*)Workspace, Lwork, devIpiv, devInfo);
+    #else
+    throw std::runtime_error("ENABLE CUDA or ENABLE HIP not enable\n");
     #endif
     if(Lwork > 0)
-        DEVICE_CHECK(deviceFreeAsync(Workspace, stream));
+        RUNTIME_CHECK(runtimeFreeAsync(Workspace, stream));
     return status;
 }
 
@@ -127,10 +137,10 @@ inline desolverStatus_t desolverGetrf(
     int *devInfo
 )
 {
-    std::complex<float> *Workspace;
+    std::complex<float> *Workspace = nullptr;
     int Lwork;
 
-    deviceStream_t stream;
+    runtimeStream_t stream;
     SOLVER_CHECK(desolverGetStream(handle, &stream));
 
     #if defined(DDLA_USE_CUDA)
@@ -142,16 +152,19 @@ inline desolverStatus_t desolverGetrf(
     #endif
 
     if(Lwork > 0)
-        DEVICE_CHECK(deviceMallocAsync(&Workspace, Lwork * sizeof(std::complex<float>), stream));
+        RUNTIME_CHECK(runtimeMallocAsync(&Workspace, Lwork * sizeof(std::complex<float>), stream));
 
+    desolverStatus_t status{};
     #if defined(DDLA_USE_CUDA)
-    desolverStatus_t status = cusolverDnCgetrf(handle, m, n, (cuFloatComplex*)A, lda, (cuFloatComplex*)Workspace, devIpiv, devInfo);
+    status = cusolverDnCgetrf(handle, m, n, (cuFloatComplex*)A, lda, (cuFloatComplex*)Workspace, devIpiv, devInfo);
     #elif defined(DDLA_USE_HIP)
-    desolverStatus_t status = hipsolverCgetrf(handle, m, n, (hipFloatComplex*)A, lda, (hipFloatComplex*)Workspace, Lwork, devIpiv, devInfo);
+    status = hipsolverCgetrf(handle, m, n, (hipFloatComplex*)A, lda, (hipFloatComplex*)Workspace, Lwork, devIpiv, devInfo);
+    #else
+    throw std::runtime_error("ENABLE CUDA or ENABLE HIP not enable\n");
     #endif
 
     if(Lwork > 0)
-        DEVICE_CHECK(deviceFreeAsync(Workspace, stream));
+        RUNTIME_CHECK(runtimeFreeAsync(Workspace, stream));
     return status;
 }
 

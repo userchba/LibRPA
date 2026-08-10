@@ -10,7 +10,7 @@ namespace ddla::detail {
 template <typename T>
 void reverse_upper_to_lower(
     int n, const T* d_A, int lda,
-    T* d_B, int ldb, deviceStream_t stream);
+    T* d_B, int ldb, runtimeStream_t stream);
 
 // Reverse-map the lower triangle of B into the upper triangle of A. Only the
 // upper triangle of A is written. The same transform is also used in the
@@ -18,7 +18,7 @@ void reverse_upper_to_lower(
 template <typename T>
 void reverse_lower_to_upper(
     int n, const T* d_B, int ldb,
-    T* d_A, int lda, deviceStream_t stream);
+    T* d_A, int lda, runtimeStream_t stream);
 
 } // namespace ddla::detail
 

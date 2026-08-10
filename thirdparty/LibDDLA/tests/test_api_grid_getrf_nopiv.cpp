@@ -15,10 +15,10 @@ void check_getrf_nopiv(const ddla::DdlaHandle_t& handle, const Shape& base)
     DeviceBuffer<Complex> d_A(handle, h_A.size());
     DeviceBuffer<int> d_info(handle, 1);
     upload(handle, d_A.ptr, h_A);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
     ddla::getrf_nopiv(n, n, d_A.ptr, n, d_info.ptr, handle);
     auto info = download(handle, d_info.ptr, 1);
-    if(info[0] != 0) MPI_Abort(handle->comm, 1);
+    if(info[0] != 0) MPI_Abort(ddla_get_communicator(handle), 1);
     require_close(handle, "getrf_nopiv(local info)", 0.0, 0.0);
 }
 

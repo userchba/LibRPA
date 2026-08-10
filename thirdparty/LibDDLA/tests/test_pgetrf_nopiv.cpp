@@ -8,7 +8,7 @@
 #include <ddla/ddla.h>
 #include <ddla/ddla_connector.h>
 #include <ddla/scal.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
 
 using namespace ddla;
 
@@ -30,12 +30,12 @@ void check_pgetrf_nopiv(int n, const DdlaHandle_t& ddla_handle)
     const size_t nelem = static_cast<size_t>(matrix_desc.m_loc()) * matrix_desc.n_loc();
     const size_t size = nelem * sizeof(std::complex<double>);
 
-    DEVICE_CHECK(deviceMallocAsync((void**)&d_A, size, ddla_handle->stream));
-    DEVICE_CHECK(deviceMallocAsync((void**)&d_A_piv, size, ddla_handle->stream));
-    DEVICE_CHECK(deviceMallocAsync((void**)&d_A_bpiv, size, ddla_handle->stream));
-    DEVICE_CHECK(deviceMallocAsync((void**)&d_ipiv_bpiv, matrix_desc.m_loc() * sizeof(int), ddla_handle->stream));
+    RUNTIME_CHECK(runtimeMallocAsync((void**)&d_A, size, ddla_handle->stream));
+    RUNTIME_CHECK(runtimeMallocAsync((void**)&d_A_piv, size, ddla_handle->stream));
+    RUNTIME_CHECK(runtimeMallocAsync((void**)&d_A_bpiv, size, ddla_handle->stream));
+    RUNTIME_CHECK(runtimeMallocAsync((void**)&d_ipiv_bpiv, matrix_desc.m_loc() * sizeof(int), ddla_handle->stream));
 
-    random_generator(d_A, nelem, DEVICE_C_64F);
+    random_generate(d_A, nelem);
     BLAS_CHECK(deblasScal(ddla_handle->blasH, nelem, 0.01, d_A, 1));
     std::complex<double> cons_i = 2.0;
     for (int i = 0; i < matrix_desc.m(); i++) {
@@ -43,13 +43,13 @@ void check_pgetrf_nopiv(int n, const DdlaHandle_t& ddla_handle)
         if (i_loc < 0) continue;
         int j_loc = matrix_desc.indx_g2l_c(i);
         if (j_loc < 0) continue;
-        DEVICE_CHECK(deviceMemcpy(d_A + i_loc + j_loc * matrix_desc.lld(), &cons_i,
-                                  sizeof(std::complex<double>), deviceMemcpyHostToDevice));
+        RUNTIME_CHECK(runtimeMemcpy(d_A + i_loc + j_loc * matrix_desc.lld(), &cons_i,
+                                  sizeof(std::complex<double>), runtimeMemcpyHostToDevice));
     }
 
-    DEVICE_CHECK(deviceMemcpyAsync(d_A_piv, d_A, size, deviceMemcpyDeviceToDevice, ddla_handle->stream));
-    DEVICE_CHECK(deviceMemcpyAsync(d_A_bpiv, d_A, size, deviceMemcpyDeviceToDevice, ddla_handle->stream));
-    DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+    RUNTIME_CHECK(runtimeMemcpyAsync(d_A_piv, d_A, size, runtimeMemcpyDeviceToDevice, ddla_handle->stream));
+    RUNTIME_CHECK(runtimeMemcpyAsync(d_A_bpiv, d_A, size, runtimeMemcpyDeviceToDevice, ddla_handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
     MPI_Barrier(MPI_COMM_WORLD);
 
     std::vector<int> ipiv(matrix_desc.m_loc());
@@ -58,7 +58,7 @@ void check_pgetrf_nopiv(int n, const DdlaHandle_t& ddla_handle)
     int info_piv = -1;
     double t_piv_start = MPI_Wtime();
     pgetrf(n, n, d_A_piv, matrix_desc, ipiv.data(), info_piv);
-    DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
     MPI_Barrier(MPI_COMM_WORLD);
     double t_piv = MPI_Wtime() - t_piv_start;
     assert(info_piv == 0);
@@ -67,7 +67,7 @@ void check_pgetrf_nopiv(int n, const DdlaHandle_t& ddla_handle)
     int info_bpiv = -1;
     double t_bpiv_start = MPI_Wtime();
     pgetrf_bpiv(n, n, d_A_bpiv, matrix_desc, d_ipiv_bpiv, info_bpiv);
-    DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
     MPI_Barrier(MPI_COMM_WORLD);
     double t_bpiv = MPI_Wtime() - t_bpiv_start;
     assert(info_bpiv == 0);
@@ -76,7 +76,7 @@ void check_pgetrf_nopiv(int n, const DdlaHandle_t& ddla_handle)
     int info_nopiv = -1;
     double t_nopiv_start = MPI_Wtime();
     pgetrf_nopiv(n, n, d_A, matrix_desc, info_nopiv);
-    DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
     MPI_Barrier(MPI_COMM_WORLD);
     double t_nopiv = MPI_Wtime() - t_nopiv_start;
     assert(info_nopiv == 0);
@@ -84,10 +84,10 @@ void check_pgetrf_nopiv(int n, const DdlaHandle_t& ddla_handle)
     std::vector<std::complex<double>> a(nelem);
     std::vector<std::complex<double>> a_piv(nelem);
     std::vector<std::complex<double>> a_bpiv(nelem);
-    DEVICE_CHECK(deviceMemcpyAsync(a.data(), d_A, size, deviceMemcpyDeviceToHost, ddla_handle->stream));
-    DEVICE_CHECK(deviceMemcpyAsync(a_piv.data(), d_A_piv, size, deviceMemcpyDeviceToHost, ddla_handle->stream));
-    DEVICE_CHECK(deviceMemcpyAsync(a_bpiv.data(), d_A_bpiv, size, deviceMemcpyDeviceToHost, ddla_handle->stream));
-    DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+    RUNTIME_CHECK(runtimeMemcpyAsync(a.data(), d_A, size, runtimeMemcpyDeviceToHost, ddla_handle->stream));
+    RUNTIME_CHECK(runtimeMemcpyAsync(a_piv.data(), d_A_piv, size, runtimeMemcpyDeviceToHost, ddla_handle->stream));
+    RUNTIME_CHECK(runtimeMemcpyAsync(a_bpiv.data(), d_A_bpiv, size, runtimeMemcpyDeviceToHost, ddla_handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
 
     std::complex<double> ln_det_loc[3] = {0.0, 0.0, 0.0};
     std::complex<double> ln_det_all[3] = {0.0, 0.0, 0.0};
@@ -127,11 +127,11 @@ void check_pgetrf_nopiv(int n, const DdlaHandle_t& ddla_handle)
         std::exit(1);
     }
 
-    DEVICE_CHECK(deviceFreeAsync(d_ipiv_bpiv, ddla_handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_A, ddla_handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_A_piv, ddla_handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_A_bpiv, ddla_handle->stream));
-    DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_ipiv_bpiv, ddla_handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_A, ddla_handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_A_piv, ddla_handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_A_bpiv, ddla_handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
 }
 
 int main(int argc, char* argv[])
@@ -152,7 +152,7 @@ int main(int argc, char* argv[])
     }
 
     for (int n : sizes) {
-        DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+        RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
         MPI_Barrier(MPI_COMM_WORLD);
         printf("testing matrix size: %d\n", n);
         check_pgetrf_nopiv(n, ddla_handle);

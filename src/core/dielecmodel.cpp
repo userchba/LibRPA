@@ -2918,18 +2918,18 @@ void invert_headwing_body_with_identity_solve(
         const std::size_t allocation_size = std::max<std::size_t>(local_size, 1);
         std::complex<double> *d_body_factor = nullptr;
         std::complex<double> *d_body_inverse = nullptr;
-        ddla::DEVICE_CHECK(ddla::deviceMallocAsync(
+        ddla::RUNTIME_CHECK(ddla::runtimeMallocAsync(
             reinterpret_cast<void **>(&d_body_factor),
-            allocation_size * sizeof(std::complex<double>), blacs_h.ddla_handle->stream));
-        ddla::DEVICE_CHECK(ddla::deviceMallocAsync(
+            allocation_size * sizeof(std::complex<double>), DeviceConnector::stream(blacs_h.ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeMallocAsync(
             reinterpret_cast<void **>(&d_body_inverse),
-            allocation_size * sizeof(std::complex<double>), blacs_h.ddla_handle->stream));
+            allocation_size * sizeof(std::complex<double>), DeviceConnector::stream(blacs_h.ddla_handle)));
 
         const auto release_device_buffers = [&]() {
-            ddla::DEVICE_CHECK(
-                ddla::deviceFreeAsync(d_body_factor, blacs_h.ddla_handle->stream));
-            ddla::DEVICE_CHECK(
-                ddla::deviceFreeAsync(d_body_inverse, blacs_h.ddla_handle->stream));
+            ddla::RUNTIME_CHECK(
+                ddla::runtimeFreeAsync(d_body_factor, DeviceConnector::stream(blacs_h.ddla_handle)));
+            ddla::RUNTIME_CHECK(
+                ddla::runtimeFreeAsync(d_body_inverse, DeviceConnector::stream(blacs_h.ddla_handle)));
         };
 
         try
@@ -2937,15 +2937,15 @@ void invert_headwing_body_with_identity_solve(
             profiler.start("headwing_body_inverse_transfer");
             if (local_size > 0)
             {
-                ddla::DEVICE_CHECK(deviceMemcpyAsync(
+                ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(
                     d_body_factor, body_factor.ptr(),
-                    local_size * sizeof(std::complex<double>), ddla::deviceMemcpyHostToDevice,
-                    blacs_h.ddla_handle->stream));
-                ddla::DEVICE_CHECK(deviceMemcpyAsync(
+                    local_size * sizeof(std::complex<double>), ddla::runtimeMemcpyHostToDevice,
+                    DeviceConnector::stream(blacs_h.ddla_handle)));
+                ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(
                     d_body_inverse, body.ptr(), local_size * sizeof(std::complex<double>),
-                    ddla::deviceMemcpyHostToDevice, blacs_h.ddla_handle->stream));
+                    ddla::runtimeMemcpyHostToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
             }
-            ddla::DEVICE_CHECK(ddla::deviceStreamSynchronize(blacs_h.ddla_handle->stream));
+            ddla::RUNTIME_CHECK(ddla::runtimeStreamSynchronize(DeviceConnector::stream(blacs_h.ddla_handle)));
             profiler.stop("headwing_body_inverse_transfer");
 
             profiler.start("headwing_body_inverse_trf_trs");
@@ -2973,17 +2973,35 @@ void invert_headwing_body_with_identity_solve(
             profiler.start("headwing_body_inverse_transfer");
             if (local_size > 0)
             {
-                ddla::DEVICE_CHECK(deviceMemcpyAsync(
+                ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(
                     body.ptr(), d_body_inverse, local_size * sizeof(std::complex<double>),
-                    ddla::deviceMemcpyDeviceToHost, blacs_h.ddla_handle->stream));
+                    ddla::runtimeMemcpyDeviceToHost, DeviceConnector::stream(blacs_h.ddla_handle)));
             }
-            ddla::DEVICE_CHECK(ddla::deviceStreamSynchronize(blacs_h.ddla_handle->stream));
+            ddla::RUNTIME_CHECK(ddla::runtimeStreamSynchronize(DeviceConnector::stream(blacs_h.ddla_handle)));
             profiler.stop("headwing_body_inverse_transfer");
         }
         catch (...)
         {
-            release_device_buffers();
-            ddla::DEVICE_CHECK(ddla::deviceStreamSynchronize(blacs_h.ddla_handle->stream));
+            // ddla's *_CHECK family now throws on failure instead of
+            // exit()-ing the process immediately. A GPU-side failure here
+            // typically means other ranks are still waiting inside a
+            // collective this rank was participating in (MPI/NCCL/RCCL
+            // bcast, barrier, ...); unwinding out of it via a C++ exception
+            // leaves those ranks blocked forever instead of the old
+            // hard-abort behaviour killing the whole job. Best-effort clean
+            // up (never letting a secondary failure mask the original
+            // exception), then abort the job outright rather than risk a
+            // silent multi-rank hang.
+            try
+            {
+                release_device_buffers();
+                ddla::RUNTIME_CHECK(ddla::runtimeStreamSynchronize(DeviceConnector::stream(blacs_h.ddla_handle)));
+            }
+            catch (...)
+            {
+                // best effort only; fall through to the abort below
+            }
+            MPI_Abort(MPI_COMM_WORLD, 1);
             throw;
         }
 

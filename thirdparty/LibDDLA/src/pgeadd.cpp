@@ -1,11 +1,12 @@
 #include <ddla/ddla.h>
 #include <cassert>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
+#include "require_gpu.h"
 #include <vector>
 #include <ddla/transport_block.h>
 #include <ddla/geam.h>
-#include <ddla/ddla_comm.h>
+#include "comm_traits.h"
 
 namespace ddla{
 
@@ -21,6 +22,7 @@ void pgeadd(
 )
 {
     DdlaHandle_t ddla_handle = array_descA.ddla_handle();
+    detail::require_gpu_backend(ddla_handle, "pgeadd");
 
     if(transa != 'N' || transb != 'N')
     {
@@ -51,15 +53,6 @@ void pgeadd(
         assert(nbA == nbB && nbA == nbC);
     }
 
-    #ifdef DDLA_USE_CCL
-    ncclComm_t nccl_comm = ddla_handle->nccl_comm;
-    ncclComm_t row_nccl_comm = ddla_handle->nccl_row_comm;
-    ncclComm_t col_nccl_comm = ddla_handle->nccl_col_comm;
-    #else
-    MPI_Comm nccl_comm = ddla_handle->comm;
-    MPI_Comm row_nccl_comm = ddla_handle->row_comm;
-    MPI_Comm col_nccl_comm = ddla_handle->col_comm;
-    #endif
     int nprows = array_descC.nprows();
     int npcols = array_descC.npcols();
     int myprow = array_descC.myprow();
@@ -68,7 +61,7 @@ void pgeadd(
     int m_loc_C = num_loc(m, array_descC.mb(), array_descC.myprow(), array_descC.irsrc(), array_descC.nprows());
     int n_loc_C = num_loc(n, array_descC.nb(), array_descC.mypcol(), array_descC.icsrc(), array_descC.npcols());
 
-    deviceStream_t stream = ddla_handle->stream;
+    runtimeStream_t stream = ddla_handle->stream;
 
     deblasOperation_t opA = (transa == 'N') ? DEBLAS_OP_N :
                             (transa == 'T') ? DEBLAS_OP_T : DEBLAS_OP_C;
@@ -99,7 +92,7 @@ void pgeadd(
             ));
         }else{
             T* d_temp;
-            DEVICE_CHECK(deviceMallocAsync((void**)&d_temp, m_loc_C * n_loc_C * sizeof(T), stream));
+            RUNTIME_CHECK(runtimeMallocAsync((void**)&d_temp, m_loc_C * n_loc_C * sizeof(T), stream));
             BLAS_CHECK(deblasGeam(
                 ddla_handle->blasH, opA, opB,
                 n_loc_C, m_loc_C,
@@ -110,20 +103,16 @@ void pgeadd(
                 d_temp, n_loc_C
             ));
             int trans_rank = ddla_handle->rc_to_rank(mypcol, myprow);
-            #ifdef DDLA_USE_CCL
-            CCL_CHECK(ncclGroupStart());
-            #endif
+            commGroupStart(ddla_handle);
             if(myprow > mypcol){
-                CCL_CHECK(cclSend(d_temp, m_loc_C * n_loc_C, trans_rank, nccl_comm, stream));
-                CCL_CHECK(cclRecv(d_C, m_loc_C * n_loc_C, trans_rank, nccl_comm, stream));
+                commSend(ddla_handle, CommScope::Grid, d_temp, (std::size_t)m_loc_C * n_loc_C, trans_rank);
+                commRecv(ddla_handle, CommScope::Grid, d_C, (std::size_t)m_loc_C * n_loc_C, trans_rank);
             }else{
-                CCL_CHECK(cclRecv(d_C, m_loc_C * n_loc_C, trans_rank, nccl_comm, stream));
-                CCL_CHECK(cclSend(d_temp, m_loc_C * n_loc_C, trans_rank, nccl_comm, stream));
+                commRecv(ddla_handle, CommScope::Grid, d_C, (std::size_t)m_loc_C * n_loc_C, trans_rank);
+                commSend(ddla_handle, CommScope::Grid, d_temp, (std::size_t)m_loc_C * n_loc_C, trans_rank);
             }
-            #ifdef DDLA_USE_CCL
-            CCL_CHECK(ncclGroupEnd());
-            #endif
-            DEVICE_CHECK(deviceFreeAsync(d_temp, stream));
+            commGroupEnd(ddla_handle);
+            RUNTIME_CHECK(runtimeFreeAsync(d_temp, stream));
         }
     }else{
         if(myprow == mypcol){
@@ -138,26 +127,22 @@ void pgeadd(
             ));
         }else{
             T* d_temp;
-            DEVICE_CHECK(deviceMallocAsync((void**)&d_temp, m_loc_C * n_loc_C * sizeof(T), stream));
+            RUNTIME_CHECK(runtimeMallocAsync((void**)&d_temp, m_loc_C * n_loc_C * sizeof(T), stream));
             const T* d_comm = transa != 'N' ? d_A : d_B;
             const T* d_nt = transa == 'N' ? d_A : d_B;
             const T& trans_scale = transa != 'N' ? alpha : beta;
             const T& nontrans_scale = transa == 'N' ? alpha : beta;
             deblasOperation_t op_trans = transa != 'N' ? opA : opB;
             int trans_rank = ddla_handle->rc_to_rank(mypcol, myprow);
-            #ifdef DDLA_USE_CCL
-            CCL_CHECK(ncclGroupStart());
-            #endif
+            commGroupStart(ddla_handle);
             if(myprow > mypcol){
-                CCL_CHECK(cclSend(d_comm, m_loc_C * n_loc_C, trans_rank, nccl_comm, stream));
-                CCL_CHECK(cclRecv(d_temp, m_loc_C * n_loc_C, trans_rank, nccl_comm, stream));
+                commSend(ddla_handle, CommScope::Grid, d_comm, (std::size_t)m_loc_C * n_loc_C, trans_rank);
+                commRecv(ddla_handle, CommScope::Grid, d_temp, (std::size_t)m_loc_C * n_loc_C, trans_rank);
             }else{
-                CCL_CHECK(cclRecv(d_temp, m_loc_C * n_loc_C, trans_rank, nccl_comm, stream));
-                CCL_CHECK(cclSend(d_comm, m_loc_C * n_loc_C, trans_rank, nccl_comm, stream));
+                commRecv(ddla_handle, CommScope::Grid, d_temp, (std::size_t)m_loc_C * n_loc_C, trans_rank);
+                commSend(ddla_handle, CommScope::Grid, d_comm, (std::size_t)m_loc_C * n_loc_C, trans_rank);
             }
-            #ifdef DDLA_USE_CCL
-            CCL_CHECK(ncclGroupEnd());
-            #endif
+            commGroupEnd(ddla_handle);
             BLAS_CHECK(deblasGeam(
                 ddla_handle->blasH, op_trans, DEBLAS_OP_N,
                 m_loc_C, n_loc_C,
@@ -167,7 +152,7 @@ void pgeadd(
                 d_nt, m_loc_C,
                 d_C, m_loc_C
             ));
-            DEVICE_CHECK(deviceFreeAsync(d_temp, stream));
+            RUNTIME_CHECK(runtimeFreeAsync(d_temp, stream));
         }
     }
 

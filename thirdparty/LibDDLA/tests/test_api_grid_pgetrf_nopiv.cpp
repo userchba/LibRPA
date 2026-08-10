@@ -18,12 +18,12 @@ void check_pgetrf_nopiv(const ddla::DdlaHandle_t& handle, const Shape& base)
     DeviceBuffer<Complex> d_B(handle, h_B.size());
     upload(handle, d_A.ptr, h_A);
     upload(handle, d_B.ptr, h_B);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
 
     int info = -1;
     ddla::pgetrf_nopiv(n, n, d_A.ptr, descA, info);
-    if(info != 0) MPI_Abort(handle->comm, 1);
-    ddla::pgetrs_nopiv('N', n, nrhs, d_A.ptr, descA, d_B.ptr, descB);
+    if(info != 0) MPI_Abort(ddla_get_communicator(handle), 1);
+    ddla::pgetrs_nopiv('L', 'N', n, nrhs, d_A.ptr, descA, d_B.ptr, descB);
     check_solution(handle, descB, d_B.ptr, h_B.size(), "pgetrf_nopiv", 5e-9);
 }
 

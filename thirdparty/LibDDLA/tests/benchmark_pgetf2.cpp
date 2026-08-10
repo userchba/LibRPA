@@ -11,7 +11,7 @@
 
 #include <ddla/ddla.h>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
 
 using namespace ddla;
 
@@ -27,19 +27,19 @@ void initialize_panel_matrix(int n, const ddla::DdlaDesc& desc, Complex* d_A,
                              const ddla::DdlaHandle_t& handle)
 {
     const size_t count = static_cast<size_t>(desc.lld()) * desc.n_loc();
-    DEVICE_CHECK(deviceMemsetAsync(d_A, 0, count * sizeof(Complex), handle->stream));
+    RUNTIME_CHECK(runtimeMemsetAsync(d_A, 0, count * sizeof(Complex), handle->stream));
 
     const Complex diagonal(2.0, 0.0);
     for(int i = 0; i < std::min(n, kPanelWidth); ++i){
         const int iloc = desc.indx_g2l_r(i);
         const int jloc = desc.indx_g2l_c(i);
         if(iloc >= 0 && jloc >= 0){
-            DEVICE_CHECK(deviceMemcpyAsync(
+            RUNTIME_CHECK(runtimeMemcpyAsync(
                 d_A + iloc + static_cast<size_t>(jloc) * desc.lld(),
-                &diagonal, sizeof(Complex), deviceMemcpyHostToDevice, handle->stream));
+                &diagonal, sizeof(Complex), runtimeMemcpyHostToDevice, handle->stream));
         }
     }
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
 }
 
 double benchmark_size(int n, int repeats, const ddla::DdlaHandle_t& handle)
@@ -49,7 +49,7 @@ double benchmark_size(int n, int repeats, const ddla::DdlaHandle_t& handle)
 
     const size_t count = static_cast<size_t>(desc.lld()) * desc.n_loc();
     Complex* d_A = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(reinterpret_cast<void**>(&d_A),
+    RUNTIME_CHECK(runtimeMallocAsync(reinterpret_cast<void**>(&d_A),
                                    std::max<size_t>(count, 1) * sizeof(Complex),
                                    handle->stream));
     initialize_panel_matrix(n, desc, d_A, handle);
@@ -67,7 +67,7 @@ double benchmark_size(int n, int repeats, const ddla::DdlaHandle_t& handle)
         MPI_CHECK(MPI_Barrier(handle->comm));
         const double start = MPI_Wtime();
         ddla::pgetf2(n, kPanelWidth, d_A, 0, desc, ipiv.data(), info);
-        DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+        RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
         const double elapsed = MPI_Wtime() - start;
 
         int global_info = 0;
@@ -88,8 +88,8 @@ double benchmark_size(int n, int repeats, const ddla::DdlaHandle_t& handle)
         }
     }
 
-    DEVICE_CHECK(deviceFreeAsync(d_A, handle->stream));
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_A, handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
 
     if(handle->myid != 0){
         return 0.0;

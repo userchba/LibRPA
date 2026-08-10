@@ -67,6 +67,7 @@ if [ -n "${MPI_EXTRA_ARGS:-}" ]; then
 fi
 
 files=(
+    "test_backend_gemm"
     # "test_pgemm_min"
     # "test_sv_gemm"
     "test_sv_gemm_hermitian_positive"

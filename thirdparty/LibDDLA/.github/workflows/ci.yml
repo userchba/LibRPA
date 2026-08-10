@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  cpu:
+    name: CPU build + ctest (mpirun)
+    runs-on: ubuntu-22.04
+    env:
+      OMPI_ALLOW_RUN_AS_ROOT: 1
+      OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libopenblas-dev
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -DDDLA_USE_CPU=ON -DBUILD_TESTS=ON
+          -DDDLA_CPU_BLAS_LIBRARY=/usr/lib/x86_64-linux-gnu/libopenblas.so
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j2
+
+      - name: Test (ctest -L cpu)
+        run: ctest --test-dir build -L cpu --output-on-failure
+
+  cuda:
+    name: CUDA build (compile check, no GPU runner)
+    runs-on: ubuntu-22.04
+    container:
+      image: nvidia/cuda:11.8.0-devel-ubuntu22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y libopenmpi-dev openmpi-bin cmake
+
+      - name: Configure (CUDA)
+        run: >
+          cmake -S . -B build-cuda -DDDLA_USE_CUDA=ON -DBUILD_TESTS=ON
+          -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (CUDA)
+        run: cmake --build build-cuda -j2
+
+  hip:
+    name: HIP build (compile check, no DCU runner)
+    runs-on: ubuntu-22.04
+    container:
+      image: rocm/dev-ubuntu-22.04:5.7
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y libopenmpi-dev openmpi-bin cmake
+
+      - name: Configure (HIP)
+        run: >
+          cmake -S . -B build-hip -DDDLA_USE_HIP=ON -DBUILD_TESTS=ON
+          -DCMAKE_HIP_ARCHITECTURES=gfx90a -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (HIP)
+        run: cmake --build build-hip -j2

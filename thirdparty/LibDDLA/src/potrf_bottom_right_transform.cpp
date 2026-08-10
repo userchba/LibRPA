@@ -67,7 +67,7 @@ constexpr int kTileSize = 16;
 template <typename T>
 void reverse_upper_to_lower(
     int n, const T* d_A, int lda,
-    T* d_B, int ldb, deviceStream_t stream)
+    T* d_B, int ldb, runtimeStream_t stream)
 {
     assert(n >= 0);
     assert(lda >= (n > 0 ? n : 1));
@@ -87,13 +87,13 @@ void reverse_upper_to_lower(
     reverse_upper_to_lower_kernel<DeviceT><<<blocks, threads, 0, stream>>>(
         n, reinterpret_cast<const DeviceT*>(d_A), lda,
         reinterpret_cast<DeviceT*>(d_B), ldb);
-    DEVICE_CHECK(deviceGetLastError());
+    RUNTIME_CHECK(runtimeGetLastError());
 }
 
 template <typename T>
 void reverse_lower_to_upper(
     int n, const T* d_B, int ldb,
-    T* d_A, int lda, deviceStream_t stream)
+    T* d_A, int lda, runtimeStream_t stream)
 {
     assert(n >= 0);
     assert(lda >= (n > 0 ? n : 1));
@@ -113,29 +113,29 @@ void reverse_lower_to_upper(
     reverse_lower_to_upper_kernel<DeviceT><<<blocks, threads, 0, stream>>>(
         n, reinterpret_cast<const DeviceT*>(d_B), ldb,
         reinterpret_cast<DeviceT*>(d_A), lda);
-    DEVICE_CHECK(deviceGetLastError());
+    RUNTIME_CHECK(runtimeGetLastError());
 }
 
 template void reverse_upper_to_lower<float>(
-    int, const float*, int, float*, int, deviceStream_t);
+    int, const float*, int, float*, int, runtimeStream_t);
 template void reverse_upper_to_lower<double>(
-    int, const double*, int, double*, int, deviceStream_t);
+    int, const double*, int, double*, int, runtimeStream_t);
 template void reverse_upper_to_lower<std::complex<float>>(
     int, const std::complex<float>*, int,
-    std::complex<float>*, int, deviceStream_t);
+    std::complex<float>*, int, runtimeStream_t);
 template void reverse_upper_to_lower<std::complex<double>>(
     int, const std::complex<double>*, int,
-    std::complex<double>*, int, deviceStream_t);
+    std::complex<double>*, int, runtimeStream_t);
 
 template void reverse_lower_to_upper<float>(
-    int, const float*, int, float*, int, deviceStream_t);
+    int, const float*, int, float*, int, runtimeStream_t);
 template void reverse_lower_to_upper<double>(
-    int, const double*, int, double*, int, deviceStream_t);
+    int, const double*, int, double*, int, runtimeStream_t);
 template void reverse_lower_to_upper<std::complex<float>>(
     int, const std::complex<float>*, int,
-    std::complex<float>*, int, deviceStream_t);
+    std::complex<float>*, int, runtimeStream_t);
 template void reverse_lower_to_upper<std::complex<double>>(
     int, const std::complex<double>*, int,
-    std::complex<double>*, int, deviceStream_t);
+    std::complex<double>*, int, runtimeStream_t);
 
 } // namespace ddla::detail

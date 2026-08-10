@@ -124,7 +124,7 @@ void Profiler::start(const std::string &tname, const std::string &tnote,
                          << "Free memory on node [GB]: " << free_mem_gb;
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
         size_t free_mem_gpu_bt, total_mem_gpu_bt;
-        ddla::DEVICE_CHECK(deviceMemGetInfo(&free_mem_gpu_bt, &total_mem_gpu_bt));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemGetInfo(&free_mem_gpu_bt, &total_mem_gpu_bt));
         global::ofs_myid << "  on GPU [GB]: " << free_mem_gpu_bt/1024./1024./1024.;
 #endif
         global::ofs_myid << std::endl;
@@ -150,7 +150,7 @@ void Profiler::stop(const std::string &tname) noexcept
                                  << "Free memory on node [GB]: " << free_mem_gb;
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
                 size_t free_mem_gpu_bt, total_mem_gpu_bt;
-                ddla::DEVICE_CHECK(deviceMemGetInfo(&free_mem_gpu_bt, &total_mem_gpu_bt));
+                ddla::RUNTIME_CHECK(ddla::runtimeMemGetInfo(&free_mem_gpu_bt, &total_mem_gpu_bt));
                 global::ofs_myid << "  on GPU [GB]: " << free_mem_gpu_bt/1024./1024./1024.;
 #endif
                 global::ofs_myid << std::endl;

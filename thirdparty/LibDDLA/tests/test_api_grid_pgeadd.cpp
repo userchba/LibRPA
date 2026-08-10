@@ -5,6 +5,8 @@ using namespace api_grid_test;
 void check_pgeadd(const ddla::DdlaHandle_t& handle, const Shape& base)
 {
     const int nb = base.nb;
+    int nprows = 0, npcols = 0;
+    ddla_get_grid_dims(handle, nprows, npcols);
     const Complex alpha(2.0, -0.5);
     const Complex beta(-0.75, 1.25);
     auto run_case = [&](char transa, char transb, int m, int n){
@@ -28,7 +30,7 @@ void check_pgeadd(const ddla::DdlaHandle_t& handle, const Shape& base)
         upload(handle, d_A.ptr, h_A);
         upload(handle, d_B.ptr, h_B);
         upload(handle, d_C.ptr, h_C);
-        DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+        check_ddla_sync(handle);
 
         ddla::pgeadd(transa, transb, m, n, alpha, d_A.ptr, descA,
                      beta, d_B.ptr, descB, d_C.ptr, descC);
@@ -42,12 +44,12 @@ void check_pgeadd(const ddla::DdlaHandle_t& handle, const Shape& base)
         require_close(handle, name, err, 2e-10);
     };
 
-    const int m_rect = round_up_for_grid(base.m, nb, handle->nprows_);
-    const int n_rect = round_up_for_grid(base.n, nb, handle->npcols_);
+    const int m_rect = round_up_for_grid(base.m, nb, nprows);
+    const int n_rect = round_up_for_grid(base.n, nb, npcols);
     run_case('N', 'N', m_rect, n_rect);
 
-    if(handle->nprows_ == handle->npcols_){
-        const int n_square = round_up_for_grid(std::max(base.m, base.n), nb, handle->nprows_);
+    if(nprows == npcols){
+        const int n_square = round_up_for_grid(std::max(base.m, base.n), nb, nprows);
         run_case('C', 'N', n_square, n_square);
         run_case('N', 'C', n_square, n_square);
         run_case('N', 'T', n_square, n_square);

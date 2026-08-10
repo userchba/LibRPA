@@ -70,10 +70,10 @@ matrix_m<std::complex<T>> power_hemat_elpa(
     auto ddla_handle = ad_A.ddla_desc().ddla_handle();
     T* d_W;
     if(use_gpu_replace_scalapack){
-        ddla::DEVICE_CHECK(ddla::deviceMallocAsync((void**)&d_W, n * sizeof(T), ddla_handle->stream));
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(d_A, A_local.ptr(), A_local.size() * sizeof(std::complex<T>), ddla::deviceMemcpyHostToDevice, ddla_handle->stream));
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(d_Z, Z_local.ptr(), Z_local.size() * sizeof(std::complex<T>), ddla::deviceMemcpyHostToDevice, ddla_handle->stream));
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(d_W, W, n * sizeof(T), ddla::deviceMemcpyHostToDevice, ddla_handle->stream));
+        ddla::RUNTIME_CHECK(ddla::runtimeMallocAsync((void**)&d_W, n * sizeof(T), DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(d_A, A_local.ptr(), A_local.size() * sizeof(std::complex<T>), ddla::runtimeMemcpyHostToDevice, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(d_Z, Z_local.ptr(), Z_local.size() * sizeof(std::complex<T>), ddla::runtimeMemcpyHostToDevice, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(d_W, W, n * sizeof(T), ddla::runtimeMemcpyHostToDevice, DeviceConnector::stream(ddla_handle)));
         
         A = d_A;
         Z = d_Z;
@@ -92,9 +92,9 @@ matrix_m<std::complex<T>> power_hemat_elpa(
     }
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
     if(use_gpu_replace_scalapack){
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(W, W_uni, n * sizeof(T), ddla::deviceMemcpyDeviceToHost, ddla_handle->stream));
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(Z_local.ptr(), Z, Z_local.size()*sizeof(std::complex<T>), ddla::deviceMemcpyDeviceToHost, ddla_handle->stream));
-        ddla::DEVICE_CHECK(ddla::deviceStreamSynchronize(ddla_handle->stream));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(W, W_uni, n * sizeof(T), ddla::runtimeMemcpyDeviceToHost, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(Z_local.ptr(), Z, Z_local.size()*sizeof(std::complex<T>), ddla::runtimeMemcpyDeviceToHost, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeStreamSynchronize(DeviceConnector::stream(ddla_handle)));
     }
 #endif
 
@@ -147,8 +147,8 @@ matrix_m<std::complex<T>> power_hemat_elpa(
     std::complex<T> *C;
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
     if(use_gpu_replace_scalapack){
-        ddla::DEVICE_CHECK(ddla::deviceMallocAsync((void**)&d_C, A_local.size() * sizeof(std::complex<T>), ddla_handle->stream));
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(d_A, d_Z, Z_local.size() * sizeof(std::complex<T>), ddla::deviceMemcpyDeviceToDevice, ddla_handle->stream));
+        ddla::RUNTIME_CHECK(ddla::runtimeMallocAsync((void**)&d_C, A_local.size() * sizeof(std::complex<T>), DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(d_A, d_Z, Z_local.size() * sizeof(std::complex<T>), ddla::runtimeMemcpyDeviceToDevice, DeviceConnector::stream(ddla_handle)));
         C = d_C;
     }else
 #endif
@@ -166,11 +166,11 @@ matrix_m<std::complex<T>> power_hemat_elpa(
     LaConnector::pgemm('N', 'C', n, n, n, {(T)1.0, (T)0.0}, Z, 1, 1, ad_Z, A, 1, 1, ad_Z, {(T)0.0, (T)0.0}, C, 1, 1, ad_A);
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
     if(use_gpu_replace_scalapack){
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(scaled.ptr(), A, scaled.size() * sizeof(std::complex<T>), ddla::deviceMemcpyDeviceToHost, ddla_handle->stream));
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(A_local.ptr(), C, A_local.size() * sizeof(std::complex<T>), ddla::deviceMemcpyDeviceToHost, ddla_handle->stream));
-        ddla::DEVICE_CHECK(ddla::deviceFreeAsync(d_C, ddla_handle->stream));
-        ddla::DEVICE_CHECK(ddla::deviceFreeAsync(d_W, ddla_handle->stream));
-        ddla::DEVICE_CHECK(ddla::deviceStreamSynchronize(ddla_handle->stream));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(scaled.ptr(), A, scaled.size() * sizeof(std::complex<T>), ddla::runtimeMemcpyDeviceToHost, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(A_local.ptr(), C, A_local.size() * sizeof(std::complex<T>), ddla::runtimeMemcpyDeviceToHost, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeFreeAsync(d_C, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeFreeAsync(d_W, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeStreamSynchronize(DeviceConnector::stream(ddla_handle)));
     }
 #endif
     // send back the scaled eigenvector matrix with descriptor using optimized block size to that
@@ -215,8 +215,8 @@ matrix_m<std::complex<T>> power_hemat_elpa_real(
     T *d_W;
     if(use_gpu_replace_scalapack)
     {
-        ddla::DEVICE_CHECK(ddla::deviceMallocAsync((void**)&d_W, n * sizeof(T), ddla_handle->stream));
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(d_A, A_local_real.ptr(), A_local_real.size() * sizeof(T), ddla::deviceMemcpyHostToDevice, ddla_handle->stream));
+        ddla::RUNTIME_CHECK(ddla::runtimeMallocAsync((void**)&d_W, n * sizeof(T), DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(d_A, A_local_real.ptr(), A_local_real.size() * sizeof(T), ddla::runtimeMemcpyHostToDevice, DeviceConnector::stream(ddla_handle)));
         A = d_A;
         Z = d_Z;
         W_uni = d_W;
@@ -234,9 +234,9 @@ matrix_m<std::complex<T>> power_hemat_elpa_real(
     }
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
     if(use_gpu_replace_scalapack){
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(W, W_uni, n * sizeof(T), ddla::deviceMemcpyDeviceToHost, ddla_handle->stream));
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(Z_local_real.ptr(), Z, Z_local_real.size()*sizeof(T), ddla::deviceMemcpyDeviceToHost, ddla_handle->stream));
-        ddla::DEVICE_CHECK(ddla::deviceStreamSynchronize(ddla_handle->stream));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(W, W_uni, n * sizeof(T), ddla::runtimeMemcpyDeviceToHost, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(Z_local_real.ptr(), Z, Z_local_real.size()*sizeof(T), ddla::runtimeMemcpyDeviceToHost, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeStreamSynchronize(DeviceConnector::stream(ddla_handle)));
     }
 #endif
     for (int i = 0; i < n; i++)
@@ -293,8 +293,8 @@ matrix_m<std::complex<T>> power_hemat_elpa_real(
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
     if(use_gpu_replace_scalapack)
     {
-        ddla::DEVICE_CHECK(ddla::deviceMallocAsync((void**)&d_C, A_local_real.size() * sizeof(T), ddla_handle->stream));
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(d_A, d_Z, Z_local_real.size() * sizeof(T), ddla::deviceMemcpyDeviceToDevice, ddla_handle->stream));
+        ddla::RUNTIME_CHECK(ddla::runtimeMallocAsync((void**)&d_C, A_local_real.size() * sizeof(T), DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(d_A, d_Z, Z_local_real.size() * sizeof(T), ddla::runtimeMemcpyDeviceToDevice, DeviceConnector::stream(ddla_handle)));
         C = d_C;
     }else
 #endif
@@ -315,11 +315,11 @@ matrix_m<std::complex<T>> power_hemat_elpa_real(
     LaConnector::pgemm('N', 'C', n, n, n, (T)1.0, Z, 1, 1, ad_Z, A, 1, 1, ad_Z, (T)0.0, C, 1, 1, ad_A);
 #if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
     if(use_gpu_replace_scalapack){
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(scaled_real.ptr(), A, scaled_real.size() * sizeof(T), ddla::deviceMemcpyDeviceToHost, ddla_handle->stream));
-        ddla::DEVICE_CHECK(deviceMemcpyAsync(A_local_real.ptr(), C, A_local_real.size() * sizeof(T), ddla::deviceMemcpyDeviceToHost, ddla_handle->stream));
-        ddla::DEVICE_CHECK(ddla::deviceFreeAsync(d_W, ddla_handle->stream));
-        ddla::DEVICE_CHECK(ddla::deviceFreeAsync(d_C, ddla_handle->stream));
-        ddla::DEVICE_CHECK(ddla::deviceStreamSynchronize(ddla_handle->stream));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(scaled_real.ptr(), A, scaled_real.size() * sizeof(T), ddla::runtimeMemcpyDeviceToHost, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeMemcpyAsync(A_local_real.ptr(), C, A_local_real.size() * sizeof(T), ddla::runtimeMemcpyDeviceToHost, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeFreeAsync(d_W, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeFreeAsync(d_C, DeviceConnector::stream(ddla_handle)));
+        ddla::RUNTIME_CHECK(ddla::runtimeStreamSynchronize(DeviceConnector::stream(ddla_handle)));
     }
 #endif
     for (size_t i = 0; i < A_local.size(); i++)

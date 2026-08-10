@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <ddla/ddla.h>
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
 
 using namespace ddla;
 
@@ -41,20 +41,20 @@ void benchmark_pgemm(int n, char transa, char transb,
     std::complex<double>* d_A = nullptr;
     std::complex<double>* d_B = nullptr;
     std::complex<double>* d_C = nullptr;
-    DEVICE_CHECK(deviceMalloc(&d_A, size));
-    DEVICE_CHECK(deviceMalloc(&d_B, size));
-    DEVICE_CHECK(deviceMalloc(&d_C, size));
+    RUNTIME_CHECK(runtimeMalloc(&d_A, size));
+    RUNTIME_CHECK(runtimeMalloc(&d_B, size));
+    RUNTIME_CHECK(runtimeMalloc(&d_C, size));
 
-    random_generator(d_A, nelem, DEVICE_C_64F);
-    random_generator(d_B, nelem, DEVICE_C_64F);
-    random_generator(d_C, nelem, DEVICE_C_64F);
+    random_generate(d_A, nelem);
+    random_generate(d_B, nelem);
+    random_generate(d_C, nelem);
 
     std::complex<double> alpha(1.0, 0.0);
     std::complex<double> beta(0.0, 0.0);
 
     // Warm up
     pgemm(transa, transb, n, n, n, alpha, d_A, descA, d_B, descB, beta, d_C, descC);
-    DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Timed runs: more iterations for small matrices
@@ -63,7 +63,7 @@ void benchmark_pgemm(int n, char transa, char transb,
     for (int iter = 0; iter < niter; iter++) {
         pgemm(transa, transb, n, n, n, alpha, d_A, descA, d_B, descB, beta, d_C, descC);
     }
-    DEVICE_CHECK(deviceStreamSynchronize(ddla_handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(ddla_handle->stream));
     MPI_Barrier(MPI_COMM_WORLD);
     double elapsed = (MPI_Wtime() - start) / niter;
 
@@ -80,9 +80,9 @@ void benchmark_pgemm(int n, char transa, char transb,
         results.push_back({n, transa, transb, max_elapsed});
     }
 
-    DEVICE_CHECK(deviceFree(d_A));
-    DEVICE_CHECK(deviceFree(d_B));
-    DEVICE_CHECK(deviceFree(d_C));
+    RUNTIME_CHECK(runtimeFree(d_A));
+    RUNTIME_CHECK(runtimeFree(d_B));
+    RUNTIME_CHECK(runtimeFree(d_C));
 }
 
 int main(int argc, char* argv[])

@@ -2,6 +2,7 @@
 #define SCAL_H
 
 #include "ddla_connector.h"
+#include "ddla_handle_t.h"
 
 namespace ddla{
 
@@ -68,6 +69,21 @@ inline deblasStatus_t deblasScal(deblasHandle_t handle, int64_t n, const std::co
     throw std::runtime_error("ENABLE CUDA or ENABLE HIP not enable\n");
 #endif
 }
+
+/**
+ * @brief Backend-neutral BLAS Level-1 scale: x := alpha * x.
+ *
+ * Mirrors ddla::gemm's shape: one function, backend chosen by the template
+ * argument, `if constexpr` dispatch inside. CPU specializations consume host
+ * pointers and call the linked BLAS (?scal); GPU specializations consume
+ * device pointers and call cuBLAS/hipBLAS via deblasScal.
+ *
+ * Note: this covers the same-type-alpha case (alpha and x share type T).
+ * The mixed real-alpha/complex-x variants (csscal/zdscal) are still reached
+ * only through the raw deblasScal overloads above.
+ */
+template <DdlaBackend Backend = default_backend_v, typename T>
+void scal(const DdlaHandle_t& handle, int n, const T& alpha, T* x, int incx);
 
 } // namespace ddla
 

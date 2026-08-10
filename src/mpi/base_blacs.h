@@ -8,6 +8,7 @@
 
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
 #include <ddla/ddla.h>
+#include <ddla/ddla_connector.h>
 #include <ddla/ddla_stream.h>
 #endif
 
@@ -244,7 +245,20 @@ public:
 #if defined(LIBRPA_USE_CUDA) || defined(LIBRPA_USE_HIP)
         if(use_gpu_replace_scalapack)
         {
-            elpa_set(elpa_handle_, "use_gpu_id", ddla_desc_.ddla_handle()->local_device, &error);
+            // LibDDLA no longer exposes a public accessor for the handle's
+            // local device id (DdlaStream::local_device moved from a static,
+            // process-global field to a private per-handle member). Query
+            // the runtime directly instead: ddla_set() already selected this
+            // rank's device via cudaSetDevice/hipSetDevice when the handle
+            // was created, and LibRPA runs one device per rank, so the
+            // currently active device is this handle's device.
+            int ddla_local_device_id = 0;
+#if defined(LIBRPA_USE_CUDA)
+            (void)cudaGetDevice(&ddla_local_device_id);
+#elif defined(LIBRPA_USE_HIP)
+            (void)hipGetDevice(&ddla_local_device_id);
+#endif
+            elpa_set(elpa_handle_, "use_gpu_id", ddla_local_device_id, &error);
 #ifdef LIBRPA_USE_HIP
             elpa_set(elpa_handle_, "amd-gpu", 1, &error);
 #endif

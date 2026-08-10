@@ -195,11 +195,11 @@ void check_success_case(const ddla::DdlaHandle_t& handle, char uplo, int n, int 
     });
     DeviceBuffer<T> d_A(handle, input.values.size());
     upload(handle, d_A.ptr, input.values);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
 
     int info = -1;
     ddla::ppotrf_bottom_right(uplo, n, d_A.ptr, desc, info);
-    DEVICE_CHECK(deviceGetLastError());
+    RUNTIME_CHECK(runtimeGetLastError());
     auto output = download(handle, d_A.ptr, input.values.size());
 
     double factor_error = 0.0;
@@ -255,17 +255,17 @@ void check_failure_case(const ddla::DdlaHandle_t& handle, char uplo, int n, int 
     });
     DeviceBuffer<T> d_A(handle, input.values.size());
     upload(handle, d_A.ptr, input.values);
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
 
     int info = -1;
     ddla::ppotrf_bottom_right(uplo, n, d_A.ptr, desc, info);
-    DEVICE_CHECK(deviceGetLastError());
+    RUNTIME_CHECK(runtimeGetLastError());
     auto output = download(handle, d_A.ptr, input.values.size());
 
     int info_min = 0;
     int info_max = 0;
-    MPI_Allreduce(&info, &info_min, 1, MPI_INT, MPI_MIN, handle->comm);
-    MPI_Allreduce(&info, &info_max, 1, MPI_INT, MPI_MAX, handle->comm);
+    MPI_Allreduce(&info, &info_min, 1, MPI_INT, MPI_MIN, ddla_get_communicator(handle));
+    MPI_Allreduce(&info, &info_max, 1, MPI_INT, MPI_MAX, ddla_get_communicator(handle));
     const int expected_info = failed_pivot + 1;
     double info_error = static_cast<double>(std::abs(info - expected_info));
     info_error = std::max(info_error, static_cast<double>(info_max - info_min));
@@ -322,13 +322,15 @@ void run_type_cases(const ddla::DdlaHandle_t& handle,
 void check_zero_local_blocks(const ddla::DdlaHandle_t& handle, int nb,
                              int irsrc, int icsrc)
 {
-    if(handle->nprows_ == 1) return;
+    int nprows = 0, npcols_unused = 0;
+    ddla_get_grid_dims(handle, nprows, npcols_unused);
+    if(nprows == 1) return;
 
     ddla::DdlaDesc desc(handle);
     desc.init(nb - 1, nb - 1, nb, nb, irsrc, icsrc);
     const int local_has_zero = desc.m_loc() == 0 || desc.n_loc() == 0 ? 1 : 0;
     int zero_ranks = 0;
-    MPI_Allreduce(&local_has_zero, &zero_ranks, 1, MPI_INT, MPI_SUM, handle->comm);
+    MPI_Allreduce(&local_has_zero, &zero_ranks, 1, MPI_INT, MPI_SUM, ddla_get_communicator(handle));
     require_close(handle, "ppotrf_bottom_right zero-local-block coverage",
                   zero_ranks > 0 ? 0.0 : 1.0, 0.0);
 }
@@ -402,11 +404,21 @@ int main(int argc, char** argv)
 
     int grid_dim = 0;
     if(options.grid_set){
-        if(options.nprows != options.npcols
-           || options.nprows * options.npcols != nprocs){
+        if(options.nprows != options.npcols){
             if(rank == 0){
-                std::cerr << "ppotrf_bottom_right tests require a square process grid "
-                          << "matching the MPI rank count" << std::endl;
+                std::cout << "skip ppotrf_bottom_right on non-square process grid"
+                          << std::endl;
+            }
+            MPI_Finalize();
+            return 0;
+        }
+        if(options.nprows * options.npcols != nprocs){
+            if(rank == 0){
+                std::cerr << "ppotrf_bottom_right: --grid " << options.nprows
+                          << "x" << options.npcols << " requires "
+                          << options.nprows * options.npcols
+                          << " MPI ranks (this run has " << nprocs << ")"
+                          << std::endl;
             }
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
@@ -463,7 +475,7 @@ int main(int argc, char** argv)
     run_type_cases<std::complex<float>>(handle, sizes, nb, sources);
     run_type_cases<std::complex<double>>(handle, sizes, nb, sources);
 
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    check_ddla_sync(handle);
     ddla::ddla_destroy(handle);
 
     if(rank == 0){

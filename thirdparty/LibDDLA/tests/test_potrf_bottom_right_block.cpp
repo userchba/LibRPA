@@ -10,7 +10,7 @@
 #include <mpi.h>
 
 #include <ddla/ddla_connector.h>
-#include <ddla/ddla_stream.h>
+#include "ddla_stream_impl.h"
 
 #include "potrf_bottom_right_internal.h"
 
@@ -177,28 +177,28 @@ bool run_success_case(char uplo, int n, const DdlaHandle_t& handle)
     T* d_A = nullptr;
     T* d_work = nullptr;
     int* d_info = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(
+    RUNTIME_CHECK(runtimeMallocAsync(
         reinterpret_cast<void**>(&d_A), matrix_bytes, handle->stream));
-    DEVICE_CHECK(deviceMallocAsync(
+    RUNTIME_CHECK(runtimeMallocAsync(
         reinterpret_cast<void**>(&d_work),
         static_cast<std::size_t>(n) * n * sizeof(T), handle->stream));
-    DEVICE_CHECK(deviceMallocAsync(
+    RUNTIME_CHECK(runtimeMallocAsync(
         reinterpret_cast<void**>(&d_info), sizeof(int), handle->stream));
-    DEVICE_CHECK(deviceMemcpyAsync(
+    RUNTIME_CHECK(runtimeMemcpyAsync(
         d_A, input.data(), matrix_bytes,
-        deviceMemcpyHostToDevice, handle->stream));
+        runtimeMemcpyHostToDevice, handle->stream));
 
     int info = -1;
     detail::potrf_bottom_right_block(
         uplo, n, d_A, lda, global_offset,
         d_work, d_info, info, handle);
-    DEVICE_CHECK(deviceGetLastError());
+    RUNTIME_CHECK(runtimeGetLastError());
 
     std::vector<T> output(input.size());
-    DEVICE_CHECK(deviceMemcpyAsync(
+    RUNTIME_CHECK(runtimeMemcpyAsync(
         output.data(), d_A, matrix_bytes,
-        deviceMemcpyDeviceToHost, handle->stream));
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+        runtimeMemcpyDeviceToHost, handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
 
     double factor_error = 0.0;
     double opposite_triangle_error = 0.0;
@@ -229,10 +229,10 @@ bool run_success_case(char uplo, int n, const DdlaHandle_t& handle)
         }
     }
 
-    DEVICE_CHECK(deviceFreeAsync(d_A, handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_work, handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_info, handle->stream));
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_A, handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_work, handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_info, handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
 
     const double tol = tolerance<T>(n);
     const bool passed = info == 0
@@ -277,28 +277,28 @@ bool run_failure_case(
     T* d_A = nullptr;
     T* d_work = nullptr;
     int* d_info = nullptr;
-    DEVICE_CHECK(deviceMallocAsync(
+    RUNTIME_CHECK(runtimeMallocAsync(
         reinterpret_cast<void**>(&d_A), input.size() * sizeof(T),
         handle->stream));
-    DEVICE_CHECK(deviceMallocAsync(
+    RUNTIME_CHECK(runtimeMallocAsync(
         reinterpret_cast<void**>(&d_work),
         static_cast<std::size_t>(n) * n * sizeof(T), handle->stream));
-    DEVICE_CHECK(deviceMallocAsync(
+    RUNTIME_CHECK(runtimeMallocAsync(
         reinterpret_cast<void**>(&d_info), sizeof(int), handle->stream));
-    DEVICE_CHECK(deviceMemcpyAsync(
+    RUNTIME_CHECK(runtimeMemcpyAsync(
         d_A, input.data(), input.size() * sizeof(T),
-        deviceMemcpyHostToDevice, handle->stream));
+        runtimeMemcpyHostToDevice, handle->stream));
 
     int info = -1;
     detail::potrf_bottom_right_block(
         uplo, n, d_A, lda, global_offset,
         d_work, d_info, info, handle);
-    DEVICE_CHECK(deviceGetLastError());
+    RUNTIME_CHECK(runtimeGetLastError());
 
-    DEVICE_CHECK(deviceFreeAsync(d_A, handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_work, handle->stream));
-    DEVICE_CHECK(deviceFreeAsync(d_info, handle->stream));
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_A, handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_work, handle->stream));
+    RUNTIME_CHECK(runtimeFreeAsync(d_info, handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
 
     const int expected_info = global_offset + failed_pivot + 1;
     const bool passed = info == expected_info;
@@ -351,7 +351,7 @@ int main(int argc, char** argv)
     passed = run_type<std::complex<float>>(handle) && passed;
     passed = run_type<std::complex<double>>(handle) && passed;
 
-    DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(handle->stream));
     ddla_destroy(handle);
     MPI_Finalize();
     return passed ? 0 : 1;

@@ -16,7 +16,7 @@ void check_pgetf2_panel(const ddla::DdlaHandle_t& handle, const Shape& base)
         });
         DeviceBuffer<Complex> d_A(handle, h_A.size());
         upload(handle, d_A.ptr, h_A);
-        DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+        check_ddla_sync(handle);
 
         std::vector<int> ipiv(descA.m_loc(), -1);
         int info = -1;
@@ -28,7 +28,7 @@ void check_pgetf2_panel(const ddla::DdlaHandle_t& handle, const Shape& base)
         auto h_A = make_local<Complex>(descA, [=](int i, int j){ return dominant_value(i, j, n); });
         DeviceBuffer<Complex> d_A(handle, h_A.size());
         upload(handle, d_A.ptr, h_A);
-        DEVICE_CHECK(deviceStreamSynchronize(handle->stream));
+        check_ddla_sync(handle);
 
         std::vector<int> ipiv(descA.m_loc(), -1);
         int info = -1;

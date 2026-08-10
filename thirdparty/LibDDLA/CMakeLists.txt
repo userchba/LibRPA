@@ -22,46 +22,59 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 option(BUILD_TESTS "Build test programs" OFF) 
+option(DDLA_USE_CPU "Build with CPU-only backend" OFF)
 option(DDLA_USE_CUDA "Build with CUDA" OFF)
 option(DDLA_USE_HIP "Build with HIP" OFF)
 option(DDLA_USE_DEBUG "DEBUG for program" OFF)
 option(DDLA_USE_CCL "ENABLE NCCL or RCCL" OFF)
 option(DDLA_USE_GPU_CPU_TUNNEL "use gpu cpu tunnel for communication" OFF)
-if(DDLA_USE_DEBUG)
-add_compile_definitions("DDLA_USE_DEBUG")
-endif()
-if(DDLA_USE_CCL)
-add_compile_definitions("DDLA_USE_CCL")
-endif()
-if(DDLA_USE_GPU_CPU_TUNNEL)
-add_compile_definitions("DDLA_USE_GPU_CPU_TUNNEL")
-endif()
 if(DDLA_USE_CUDA AND DDLA_USE_HIP)
     message(FATAL_ERROR "Cannot enable both CUDA and HIP")
 endif()
-if ((NOT DDLA_USE_CUDA) AND (NOT DDLA_USE_HIP))
-    message(FATAL_ERROR "Must enable either CUDA or HIP")
+if ((NOT DDLA_USE_CPU) AND (NOT DDLA_USE_CUDA) AND (NOT DDLA_USE_HIP))
+    message(FATAL_ERROR "Must enable at least one backend (CPU, CUDA, or HIP)")
 endif()
-if(DDLA_USE_CUDA)
-    add_compile_definitions("DDLA_USE_CUDA")
-endif()
-if(DDLA_USE_HIP)
-    add_compile_definitions("DDLA_USE_HIP")
-    add_compile_definitions("__HIP_PLATFORM_AMD__")
+# Dual-build mode: CPU + (CUDA or HIP).
+# The main library target compiles with the selected GPU backend macros;
+# CPU pgemm compiles in a separate object target with DDLA_USE_CPU only.
+set(DDLA_DUAL_BUILD OFF)
+if(DDLA_USE_CPU AND (DDLA_USE_CUDA OR DDLA_USE_HIP))
+    set(DDLA_DUAL_BUILD ON)
 endif()
 
+# CUDA/HIP target definitions are set in src/CMakeLists.txt on ddla_lib
+
 enable_language(CXX)
+include(GNUInstallDirs)
 include_directories(src)
 include_directories(include)
+include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
+
+# ---------------------------------------------------------------------------
+# Generated capability header ddla_config.h
+# ---------------------------------------------------------------------------
+if(DDLA_USE_CPU OR DDLA_DUAL_BUILD)
+    set(DDLA_HAS_CPU 1)
+else()
+    set(DDLA_HAS_CPU 0)
+endif()
+if(DDLA_USE_CUDA OR DDLA_USE_HIP)
+    set(DDLA_HAS_GPU 1)
+else()
+    set(DDLA_HAS_GPU 0)
+endif()
+configure_file(
+    ${PROJECT_SOURCE_DIR}/include/ddla/ddla_config.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/include/ddla/ddla_config.h
+    @ONLY
+)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/include/ddla/ddla_config.h
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ddla)
+
 find_package(MPI REQUIRED)
 list(APPEND math_libs MPI::MPI_CXX)
 
 
-
-if(BUILD_TESTS)
-    # enable_testing()
-    add_subdirectory(tests)
-endif()
 
 message(STATUS "CMAKE_CXX_FLAGS: ${CMAKE_CXX_FLAGS}")
 message(STATUS "DDLA_USE_CCL: ${DDLA_USE_CCL}")
@@ -74,26 +87,39 @@ message(STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
 
 if(DDLA_USE_HIP)
     enable_language(HIP)
-    # if(NOT EXISTS ${ROCM_PATH})
-    #     message(FATAL_ERROR "ROCm not found at ${ROCM_PATH}")
-    # endif()
-    # list(APPEND CMAKE_PREFIX_PATH "${ROCM_PATH}")
-    # find_package(hip REQUIRED)
-    # find_package(amd_comgr REQUIRED)
-    # set(CMAKE_HIP_STANDARD 17)
-    # set(CMAKE_HIP_STANDARD_REQUIRED True)
-    add_compile_definitions("DDLA_USE_HIP")
-    add_compile_definitions("__HIP_PLATFORM_AMD__")
-    set(HIP_LIBRARIES "-lhipblas -lrccl -lhipsolver -lamdhip64 -lhiprand -lgalaxyhip")
+    set(HIP_LIBRARIES "-lhipblas -lrccl -lhipsolver -lamdhip64 -lhiprand -lgalaxyhip -lomp")
     # -lamdhip64 -lhsa-runtime64
     # find_package(HIP REQUIRED)
     list(APPEND math_libs
         ${HIP_LIBRARIES}
     )
 endif()
+# cpu setting
+if(DDLA_USE_CPU)
+    # DDLA_USE_CPU definition is set on target in src/CMakeLists.txt
+endif()
+if(DDLA_USE_CPU OR DDLA_DUAL_BUILD)
+    if(DDLA_USE_CCL AND NOT DDLA_DUAL_BUILD)
+        message(FATAL_ERROR "DDLA_USE_CCL is not supported with CPU-only backend")
+    endif()
+    if(DDLA_USE_GPU_CPU_TUNNEL AND NOT DDLA_DUAL_BUILD)
+        message(FATAL_ERROR "DDLA_USE_GPU_CPU_TUNNEL is not supported with CPU-only backend")
+    endif()
+    set(DDLA_CPU_BLAS_LIBRARY "" CACHE FILEPATH "Path to BLAS library for CPU backend")
+    if(DDLA_CPU_BLAS_LIBRARY)
+        if(NOT EXISTS "${DDLA_CPU_BLAS_LIBRARY}")
+            message(FATAL_ERROR "DDLA_CPU_BLAS_LIBRARY set to nonexistent file: ${DDLA_CPU_BLAS_LIBRARY}")
+        endif()
+        message(STATUS "Using CPU BLAS: ${DDLA_CPU_BLAS_LIBRARY}")
+        list(APPEND math_libs "${DDLA_CPU_BLAS_LIBRARY}")
+    else()
+        find_package(BLAS REQUIRED)
+        message(STATUS "Using BLAS: ${BLAS_LIBRARIES}")
+        list(APPEND math_libs ${BLAS_LIBRARIES})
+    endif()
+endif()
 # cuda setting
 if(DDLA_USE_CUDA)
-    add_compile_definitions("DDLA_USE_CUDA")
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
         set(CMAKE_CUDA_ARCHITECTURES "80")
     endif()
@@ -136,3 +162,29 @@ if(DDLA_USE_CUDA)
     endif()
 endif(DDLA_USE_CUDA)
 add_subdirectory(src)
+
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+# ---------------------------------------------------------------------------
+# Installable CMake package config (find_package(LibDDLA))
+# ---------------------------------------------------------------------------
+include(CMakePackageConfigHelpers)
+set(LIBDDLA_CMAKE_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/LibDDLA")
+configure_package_config_file(
+    ${PROJECT_SOURCE_DIR}/cmake/LibDDLAConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/LibDDLAConfig.cmake
+    INSTALL_DESTINATION ${LIBDDLA_CMAKE_INSTALL_DIR}
+)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/LibDDLAConfigVersion.cmake
+    VERSION ${version}
+    COMPATIBILITY SameMajorVersion
+)
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/LibDDLAConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/LibDDLAConfigVersion.cmake
+    DESTINATION ${LIBDDLA_CMAKE_INSTALL_DIR}
+)
+
