@@ -40,6 +40,22 @@ inline ncclResult_t cclRecv(T* recvbuff, size_t count, int peer, ncclComm_t comm
     return ncclRecv(recvbuff, count * sizeof(T), ncclInt8, peer, comm, stream);
 }
 
+// Symmetric exchange with a single peer. Both partners call this; it must not
+// deadlock regardless of message size. Under CCL the send/recv pair is safe
+// only because the caller brackets it in a group, so keep that bracketing
+// inside the primitive itself rather than relying on every call site.
+template<typename T>
+inline ncclResult_t cclSendRecv(const T* sendbuff, T* recvbuff, size_t count, int peer, ncclComm_t comm, runtimeStream_t stream)
+{
+    ncclResult_t status = ncclGroupStart();
+    if (status != ncclSuccess) return status;
+    status = ncclSend(sendbuff, count * sizeof(T), ncclInt8, peer, comm, stream);
+    if (status == ncclSuccess)
+        status = ncclRecv(recvbuff, count * sizeof(T), ncclInt8, peer, comm, stream);
+    const ncclResult_t end_status = ncclGroupEnd();
+    return status != ncclSuccess ? status : end_status;
+}
+
 template<typename T>
 inline ncclResult_t cclBroadcast(const T* sendbuff, T* recvbuff, size_t count, int root, ncclComm_t comm, runtimeStream_t stream)
 {
@@ -88,6 +104,21 @@ inline int cclRecv(T* recvbuff, size_t count, int peer, MPI_Comm comm, runtimeSt
     return MPI_Recv(recvbuff, count * sizeof(T), MPI_BYTE, peer, 0, comm, MPI_STATUS_IGNORE);
 }
 
+// Symmetric exchange with a single peer, both partners calling it at once.
+// This MUST be MPI_Sendrecv rather than MPI_Send followed by MPI_Recv: once the
+// message exceeds the transport's eager limit (UCX_RNDV_THRESH, 16 KB by
+// default) MPI_Send switches to rendezvous and blocks until the peer posts a
+// matching receive -- but the peer is inside its own MPI_Send, so both hang.
+// MPI_Sendrecv is deadlock-free at any size.
+template<typename T>
+inline int cclSendRecv(const T* sendbuff, T* recvbuff, size_t count, int peer, MPI_Comm comm, runtimeStream_t stream)
+{
+    RUNTIME_CHECK(runtimeStreamSynchronize(stream));
+    return MPI_Sendrecv(sendbuff, count * sizeof(T), MPI_BYTE, peer, 0,
+                        recvbuff, count * sizeof(T), MPI_BYTE, peer, 0,
+                        comm, MPI_STATUS_IGNORE);
+}
+
 template<typename T>
 inline int cclBcast(T* buff, size_t count, int root, MPI_Comm comm, runtimeStream_t stream)
 {
@@ -134,6 +165,22 @@ inline int cclRecv(T* h_recvbuff, T* d_recvbuff, size_t count, int peer, MPI_Com
 {
     RUNTIME_CHECK(runtimeStreamSynchronize(stream));
     int value = MPI_Recv(h_recvbuff, count * sizeof(T), MPI_BYTE, peer, 0, comm, MPI_STATUS_IGNORE);
+    RUNTIME_CHECK(runtimeMemcpyAsync(d_recvbuff, h_recvbuff, count * sizeof(T), runtimeMemcpyHostToDevice, stream));
+    return value;
+}
+
+// Tunnel-staged symmetric exchange. Needs two distinct host buffers (send and
+// receive cannot alias), and MPI_Sendrecv for the same deadlock-freedom reason
+// as the direct-MPI overload above.
+template<typename T>
+inline int cclSendRecv(T* h_sendbuff, const T* d_sendbuff, T* h_recvbuff, T* d_recvbuff,
+                       size_t count, int peer, MPI_Comm comm, runtimeStream_t stream)
+{
+    RUNTIME_CHECK(runtimeMemcpyAsync(h_sendbuff, d_sendbuff, count * sizeof(T), runtimeMemcpyDeviceToHost, stream));
+    RUNTIME_CHECK(runtimeStreamSynchronize(stream));
+    int value = MPI_Sendrecv(h_sendbuff, count * sizeof(T), MPI_BYTE, peer, 0,
+                             h_recvbuff, count * sizeof(T), MPI_BYTE, peer, 0,
+                             comm, MPI_STATUS_IGNORE);
     RUNTIME_CHECK(runtimeMemcpyAsync(d_recvbuff, h_recvbuff, count * sizeof(T), runtimeMemcpyHostToDevice, stream));
     return value;
 }

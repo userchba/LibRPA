@@ -205,6 +205,33 @@ inline void commRecv(const DdlaHandle_t& h, CommScope scope, T* buf, std::size_t
     }
 }
 
+// Exchange `count` elements with a single peer: send sbuf, receive into rbuf,
+// both partners calling simultaneously. Prefer this over a commSend followed by
+// a commRecv -- that pair deadlocks once the message passes the transport's
+// eager threshold, because both sides block in their send waiting for a receive
+// the other has not reached yet. See cclSendRecv in ddla_comm.h.
+template <DdlaBackend Backend = detail::local_backend_v, typename T>
+inline void commSendRecv(const DdlaHandle_t& h, CommScope scope,
+                         const T* sbuf, T* rbuf, std::size_t count, int peer)
+{
+    if constexpr (Backend == DdlaBackend::CPU) {
+        MPI_CHECK(MPI_Sendrecv(sbuf, (int)count, detail::mpi_datatype<T>(), peer, 0,
+                               rbuf, (int)count, detail::mpi_datatype<T>(), peer, 0,
+                               CommTraits<Backend>::comm(h, scope), MPI_STATUS_IGNORE));
+    } else {
+#if defined(DDLA_USE_GPU_CPU_TUNNEL)
+        T* hs = detail::tunnel_staging<T>(h, 0, count);
+        T* hr = detail::tunnel_staging<T>(h, 1, count);
+        MPI_CHECK(cclSendRecv(hs, sbuf, hr, rbuf, count, peer,
+                              CommTraits<Backend>::comm(h, scope), h->stream));
+        RUNTIME_CHECK(runtimeStreamSynchronize(h->stream));
+#else
+        CCL_CHECK(cclSendRecv(sbuf, rbuf, count, peer,
+                              CommTraits<Backend>::comm(h, scope), h->stream));
+#endif
+    }
+}
+
 template <DdlaBackend Backend = detail::local_backend_v, typename T>
 inline void commAllReduce(const DdlaHandle_t& h, CommScope scope,
                           const T* sbuf, T* rbuf, int count, cclOp op)

@@ -520,9 +520,12 @@ void pgeadd(
  * @param alpha  Scalar to add to each diagonal element.
  * @param d_A    Device pointer to distributed matrix A (input/output).
  * @param array_descA  DdlaDesc for A (must be square).
+ * @param n      Logical order of the leading sub-matrix to update. Negative
+ *               (the default) means the whole matrix, i.e. the descriptor's
+ *               own dimensions.
  */
 template <typename T1, typename T2>
-void pdam(const T1& alpha, T2* d_A, const DdlaDesc& array_descA);
+void pdam(const T1& alpha, T2* d_A, const DdlaDesc& array_descA, const int& n = -1);
 
 /**
  * @brief Distributed Cholesky factorization.

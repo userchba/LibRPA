@@ -147,10 +147,13 @@ void pgetf2(
                     sizeof(T), n_loc,
                     runtimeMemcpyDeviceToDevice, stream
                 ));
-                commGroupStart(ddla_handle);
-                commSend(ddla_handle, CommScope::Col, d_temp, (std::size_t)n_loc, max_prow);
-                commRecv(ddla_handle, CommScope::Col, d_temp_peer, (std::size_t)n_loc, max_prow);
-                commGroupEnd(ddla_handle);
+                // Symmetric pivot-row swap: both partners exchange at once, so
+                // this must be a single Sendrecv. A blocking send followed by a
+                // blocking receive deadlocks as soon as n_loc * sizeof(T)
+                // exceeds the transport's eager threshold (16 KB by default),
+                // which for a 2 x nprows grid happens at roughly n > 2048.
+                commSendRecv(ddla_handle, CommScope::Col, d_temp, d_temp_peer,
+                             (std::size_t)n_loc, max_prow);
                 RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_A + i_panel, lld * sizeof(T),
                     d_temp_peer, sizeof(T),
@@ -164,10 +167,9 @@ void pgetf2(
                     sizeof(T), n_loc,
                     runtimeMemcpyDeviceToDevice, stream
                 ));
-                commGroupStart(ddla_handle);
-                commSend(ddla_handle, CommScope::Col, d_temp, (std::size_t)n_loc, owner_row);
-                commRecv(ddla_handle, CommScope::Col, d_temp_peer, (std::size_t)n_loc, owner_row);
-                commGroupEnd(ddla_handle);
+                // Peer side of the same swap -- see the comment above.
+                commSendRecv(ddla_handle, CommScope::Col, d_temp, d_temp_peer,
+                             (std::size_t)n_loc, owner_row);
                 RUNTIME_CHECK(runtimeMemcpy2DAsync(
                     d_A + max_loc_row, lld * sizeof(T),
                     d_temp_peer, sizeof(T),
