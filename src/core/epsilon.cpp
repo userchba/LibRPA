@@ -3366,6 +3366,26 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
                                    {0.0, 0.0}, coul_chi0_block_ptr, 1, 1, desc_nabf_nabf_opt);
                 global::profiler.stop("epsilon_gamma_head_cholesky_projection");
 
+                // Save Rtilde before the in-place solve.  Wc must be formed as
+                // sqrt(Vwc) * U_ns * (Ytilde - Rtilde), i.e. the subtraction has
+                // to happen inside the n_nonsingular subspace.  Subtracting the
+                // full-space sqrt(Vwc) after the back-transform instead leaves a
+                // spurious -sqrt(Vwc)*P_sing*sqrt(Vwc) term: X = U_ns*Ytilde has
+                // no component in the truncated subspace, while sqrt(Vwc) does --
+                // it is built from the truncated Coulomb, whose null space differs
+                // from the bare Coulomb's that defines U_ns.
+                auto head_rtilde_block = init_local_mat<complex<double>>(desc_nabf_nabf_opt, MAJOR::COL);
+                std::complex<double> *head_rtilde_ptr = head_rtilde_block.ptr();
+#if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
+                if (use_gpu_replace_scalapack)
+                {
+                    RUNTIME_CHECK(runtimeMallocAsync((void**)&head_rtilde_ptr, head_rtilde_block.size() * sizeof(std::complex<double>), DeviceConnector::stream(blacs_h.ddla_handle)));
+                    RUNTIME_CHECK(runtimeMemcpyAsync(head_rtilde_ptr, coul_chi0_block_ptr, head_rtilde_block.size() * sizeof(std::complex<double>), runtimeMemcpyDeviceToDevice, DeviceConnector::stream(blacs_h.ddla_handle)));
+                }
+                else
+#endif
+                memcpy(head_rtilde_ptr, coul_chi0_block_ptr, head_rtilde_block.size() * sizeof(std::complex<double>));
+
                 global::profiler.start("epsilon_gamma_head_cholesky_solve", LIBRPA_VERBOSE_DEBUG);
                 int info = 0;
                 // n_nonsingular_int is the logical solve order: LibDDLA's
@@ -3416,11 +3436,19 @@ std::map<double, std::map<Vector3_Order<double>, Matz>> compute_Wc_freq_q_blacs(
                 // rows and the matching leading n_nonsingular columns of
                 // Utilde -- into the now-free chi0_block_ptr (its E_ns
                 // content was destroyed by the solve above).
+                // Ytilde <- Ytilde - Rtilde, inside the reduced subspace, so the
+                // back-transform below yields U_ns*(Ytilde - Rtilde) directly.
+                LaConnector::axpy(head_rtilde_block.size(), {-1.0, 0.0}, head_rtilde_ptr, 1, coul_chi0_block_ptr, 1, blacs_h);
+#if defined(LIBRPA_USE_HIP) || defined(LIBRPA_USE_CUDA)
+                if (use_gpu_replace_scalapack)
+                {
+                    RUNTIME_CHECK(runtimeFreeAsync(head_rtilde_ptr, DeviceConnector::stream(blacs_h.ddla_handle)));
+                }
+#endif
                 LaConnector::pgemm('N', 'N', n_abf, n_abf, n_nonsingular_int, {1.0, 0.0},
                                    coul_eigen_block_ptr, 1, 1, desc_nabf_nabf_opt,
                                    coul_chi0_block_ptr, 1, 1, desc_nabf_nabf_opt,
                                    {0.0, 0.0}, chi0_block_ptr, 1, 1, desc_nabf_nabf_opt);
-                LaConnector::axpy(head_coulwc_block.size(), {-1.0, 0.0}, head_coulwc_ptr, 1, chi0_block_ptr, 1, blacs_h);
                 global::profiler.stop("epsilon_solver_coulwc_1");
 
                 global::profiler.start("epsilon_multiply_coulwc_2",
