@@ -113,7 +113,7 @@ The header combination must compile before configuration can continue. This chec
 
 | Parent target | Selection requirement | Parent responsibilities |
 | --- | --- | --- |
-| `LibDDLA::ddla` | Enable CUDA or HIP | Supply a library, public include paths and link dependencies compatible with that backend |
+| `ddla::ddla` (or `LibDDLA::ddla`) | Enable CUDA or HIP | Supply a library, public include paths and link dependencies compatible with that backend |
 | `ELPA::ELPA` | Detected automatically | Supply the library, headers and required link dependencies |
 | `LibGXMiniMax` or `greenX::LibGXMiniMax` | Detected automatically | Supply link dependencies and compatible modules: `Fortran_MODULE_DIRECTORY` for source builds, interface include directories for imported targets |
 
