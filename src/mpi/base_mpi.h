@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "../interface/mpi.h"
+#include "../interface/mpi/mpi.h"
 #include "librpa_enums.h"
 
 namespace librpa_int
