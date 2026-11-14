@@ -178,8 +178,10 @@ blocks:
       - api.libri_chi0_collect_max_bytes
 
   - heading: RPA correlation
-    fields:
-      - api.use_scalapack_ecrpa
+    text: |
+      RPA selects the shared BLACS/ScaLAPACK path automatically for atom-pair
+      and LibRI routing when LibRI is available. R-tau routing and builds
+      without LibRI use the existing conventional assembly automatically.
 
   - heading: Constrained RPA
     text: |
@@ -261,7 +263,6 @@ blocks:
       - api.istate_ref_hedin_shift
       - api.sf_gf_omega_shift
       - api.sf_sigc_omega_shift
-      - api.use_scalapack_gw_wc
       - api.use_cholesky_gw_wc
       - api.use_gpu_replace_scalapack
       - api.linear_algorithm
@@ -285,17 +286,22 @@ blocks:
       selections retain their respective backends. No distributed matrix is
       gathered to select this fallback.
 
-      `use_scalapack_gw_wc` is retained for input and C/Fortran layout
-      compatibility and normalized to true. Setting it to false no longer
-      selects a separate replicated LAPACK Wc algorithm.
+      RPA selects BLACS/ScaLAPACK automatically for atom-pair/LibRI routing
+      when LibRI is available. R-tau routing and builds without LibRI retain
+      their conventional assembly automatically. Wc always uses the shared
+      descriptor-based implementation.
+
+      `use_scalapack_ecrpa` and `use_scalapack_gw_wc` were removed. Delete
+      these keywords from inputs. The C/Fortran options layout changed;
+      recompile library clients.
 
   - heading: G0W0 native velocity
     text: |
       The standalone `g0w0` driver and its `g0w0_band` alias can construct analytic
       head/wing velocity from the original DFT H(R), S(R), and r(R). The driver
       preset `option_dielect_func = 6` selects native velocity and then resolves
-      to the existing numerical option 3. It requires `replace_w_head = true`,
-      `use_scalapack_gw_wc = true`, and `use_pyatb = false`. An omitted velocity
+      to the existing numerical option 3. It requires `replace_w_head = true`
+      and `use_pyatb = false`. An omitted velocity
       selector becomes `native`; explicit `native` is accepted and explicit
       `file` is rejected. The log records requested option 6 and effective
       option 3. QSGW also supports option 6 with its `current_hr` velocity
@@ -358,8 +364,7 @@ blocks:
       `hrs2_nao.csr` for two physical collinear channels). The native DFT
       baseline and complete current correction use the same reconstruction
       as formal HR export; no velocity file is needed.
-      The preset requires `replace_w_head = true`, `use_scalapack_gw_wc = true`,
-      and `use_pyatb = false`. An omitted selector or explicit `current_hr` is
+      The preset requires `replace_w_head = true` and `use_pyatb = false`. An omitted selector or explicit `current_hr` is
       accepted; explicit `reference` or `rotate_reference` is rejected.
       The log records requested option 6 and effective option 3.
       Existing option 3 with `current_hr` remains equivalent; option 3/4 with

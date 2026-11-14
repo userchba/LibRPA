@@ -267,14 +267,13 @@ then apply the existing analytic head/wing prescription at every iteration.
 This preset selects `qsgw_headwing_velocity = current_hr` and resolves to
 numerical option 3. An omitted selector or explicit `current_hr` is accepted;
 explicit `reference` and `rotate_reference` are rejected for option 6. It
-requires `replace_w_head = true`, `use_scalapack_gw_wc = true`, and
+requires `replace_w_head = true` and
 `use_pyatb = false`. The log records requested option 6 and effective option 3.
 The native mode remains experimental.
 
 Existing option 3 provides both analytic head and wing, and option 4 provides
-head only, with `replace_w_head = true`. Option 3 requires
-`use_scalapack_gw_wc = true`: the LAPACK Wc route does not consume analytic
-wings and is rejected. Option 4 retains its head-only routes.
+head only, with `replace_w_head = true`. The shared Wc implementation consumes
+analytic wings for option 3 automatically. Option 4 retains its head-only routes.
 These options retain their explicit
 `qsgw_headwing_velocity` selection:
 
@@ -299,7 +298,6 @@ task = qsgw
 input_preset = abacus
 replace_w_head = true
 option_dielect_func = 6
-use_scalapack_gw_wc = true
 use_pyatb = false
 use_kpara_scf_eigvec = false
 use_symmetry_rpa = false
@@ -447,7 +445,7 @@ use_shrink_abfs = false
 sqrt_coulomb_threshold = 0
 ```
 
-Keep `replace_w_head = true` and `use_scalapack_gw_wc = true`. The metadata
+Keep `replace_w_head = true`. The metadata
 must describe the same full auxiliary basis and Coulomb data as the ordinary
 standalone dataset. The driver applies the producer normalization to every
 new analytic head/wing object, including after checkpoint continuation.

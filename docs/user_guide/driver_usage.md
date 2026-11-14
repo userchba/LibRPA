@@ -145,7 +145,6 @@ task = g0w0
 input_preset = abacus
 replace_w_head = true
 option_dielect_func = 6
-use_scalapack_gw_wc = true
 g0w0_fn_hr = OUT.ABACUS/data-HR-sparse_SPIN0.csr
 g0w0_fn_sr = OUT.ABACUS/data-SR-sparse_SPIN0.csr
 g0w0_fn_rr = OUT.ABACUS/data-rR-sparse.csr
@@ -158,7 +157,7 @@ use_symmetry_gw = false
 use_symmetry_exx = false
 ```
 
-Option 6 requires `replace_w_head = true`, `use_scalapack_gw_wc = true`, and
+Option 6 requires `replace_w_head = true` and
 `use_pyatb = false`. It selects `g0w0_headwing_velocity = native` when the selector
 is omitted; an explicit `native` is also accepted, while an explicit `file` is
 rejected. The driver log records requested option 6 and effective numerical
@@ -168,8 +167,8 @@ option 3 and either supply velocity through the public setter or construct it wi
 resolved only by the standalone G0W0 driver.
 
 The previous explicit selection remains supported with the same H/S/r inputs
-and other settings. Native option 3 also requires `use_scalapack_gw_wc = true`
-to consume the analytic wings:
+and other settings. Native option 3 consumes analytic wings through the shared
+Wc implementation:
 
 ```ini
 option_dielect_func = 3

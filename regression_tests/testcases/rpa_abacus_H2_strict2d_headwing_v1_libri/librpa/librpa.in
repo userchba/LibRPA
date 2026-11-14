@@ -15,7 +15,6 @@ use_2d_dielectric = t
 use_pyatb = f
 use_fullcoul_eps = t
 use_fullcoul_wc = t
-use_scalapack_ecrpa = t
 parallel_routing = libri
 vq_threshold = 0
 sqrt_coulomb_threshold = 0
