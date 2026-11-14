@@ -8,10 +8,16 @@
 ## [Unreleased]
 
 - Centralize one-rank host BLAS/LAPACK fallback in `LaConnector`, retaining
-  explicit DDLA/ELPA choices. Remove the separate replicated LAPACK Wc path;
-  `use_scalapack_gw_wc` remains layout-compatible and is normalized to true.
+  explicit DDLA/ELPA choices. Remove the separate replicated LAPACK Wc path.
 
 ### Breaking changes
+
+- Removed `use_scalapack_ecrpa` and `use_scalapack_gw_wc` from inputs and the
+  C/Fortran options structure. Recompile library clients and remove both
+  keywords from input files. ScaLAPACK is selected automatically for supported
+  RPA routes; Wc always uses the shared descriptor-based implementation.
+  R-tau and builds without LibRI retain automatic conventional RPA assembly.
+  Removed five unused epsilon helpers and the unused MP2 placeholder.
 
 - Replaced `use_elpa_sqrt_coulomb` with `eigensolver_method = scalapack|ddla|elpa`
   for distributed Coulomb matrix powers. Recompile applications using the C or

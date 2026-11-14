@@ -292,11 +292,6 @@ typedef struct
     //! Experimental
     long long libri_chi0_collect_max_bytes;
 
-    //! Flag to control whether to use ScaLAPACK to compute RPA correlation energy.
-    //! @par Default
-    //! true
-    LibrpaSwitch use_scalapack_ecrpa;
-
     /* ============================================================================= */
     /* ABF compression */
 
@@ -469,13 +464,6 @@ typedef struct
     //! Experimental
     double sf_sigc_omega_shift;
 
-    //! Deprecated compatibility field, normalized to true. Wc uses one
-    //! descriptor-based algorithm; one host rank falls back to BLAS/LAPACK.
-    //! Select matrix backends with linear_algorithm and eigensolver_method.
-    //! @par Default
-    //! true
-    LibrpaSwitch use_scalapack_gw_wc;
-
     //! Flag of using cholesky factorization for computing Wc from chi0.
     //! @par Default
     //! false
@@ -538,7 +526,7 @@ typedef struct
      * Standalone G0W0/cRPA/QSGW drivers also accept preset 6. G0W0 differentiates
      * original H/S/r; QSGW differentiates its complete current native-baseline
      * Hamiltonian. Both resolve to numerical option 3 for analytic head and wing.
-     * This requires replace_w_head and use_scalapack_gw_wc, and use_pyatb=false.
+     * This requires replace_w_head and use_pyatb=false.
      * API callers supply velocity or numerical H/S/r blocks and select 3/4;
      * they must not pass driver preset 6 into a numerical options struct.
      *
